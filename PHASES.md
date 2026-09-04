@@ -33,6 +33,7 @@ Net cost: roughly one extra week. Phase 5 gets simpler, not harder, because all 
 | Video preview | Two players in a `QStackedWidget`, next clip preloaded |
 | Undo granularity | One command per completed gesture, pushed on mouse release |
 | FFmpeg source | LGPL build from gyan.dev, vendored into `bin/` |
+| Video tracks | Exactly one in v1. No compositing. |
 
 ### Why 120000 ticks per second
 
@@ -488,6 +489,9 @@ LAYOUT:
   - Video lanes 72px, audio lanes 56px
   - Track header column on the left, 120px fixed, does not scroll horizontally.
     Track name plus a mute toggle.
+    The "add video track" affordance is disabled when a video track already exists.
+    Tooltip: "Multiple video tracks require compositing, not supported in this version."
+    Audio tracks are unlimited.
   - Playhead: 2px accent line spanning all lanes, drawn above clips
 
 ClipItem (QGraphicsRectItem subclass):
@@ -574,6 +578,12 @@ Command pattern. Pure Python, no Qt. All time arguments are int ticks.
       SetTrackMuted(track_id, muted)
       AddClipFromMedia(track_id, src, src_in, src_out, timeline_start)
       AddTrack(kind, name) / RemoveTrack(track_id)
+
+  AddTrack CONSTRAINT: v1 has no compositing. core.filtergraph raises RenderError when
+  more than one video track carries clips. AddTrack("video", ...) must refuse when a
+  video track already exists, raising a clear error the UI surfaces as a disabled menu
+  item, never as a failure discovered at export time. Audio tracks are unlimited.
+  Add a test asserting a second AddTrack("video") is rejected.
 
   Each command stores whatever it needs to reverse itself EXACTLY. DeleteClip keeps
   the full Clip. TrimClip keeps the three previous values. RemoveTrack keeps the whole
