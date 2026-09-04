@@ -26,6 +26,17 @@ this editor supports lands on a whole number of ticks per frame:
     30000/1001     4004
     60000/1001     2002
 
+That table covers the broadcast rates, and every one of them divides evenly.
+Real files are not so tidy. A variable frame rate recording probes to whatever
+average ffprobe computed, something like 24249/1000, and 120000 does not divide
+by that at all: one frame is Fraction(40000000, 8083) ticks, about 4948.66.
+
+This is why ticks_per_frame returns a Fraction. The value stays exact, the
+arithmetic stays exact, and positions are computed by multiplying rather than
+by accumulating a rounded per-frame constant. Nothing anywhere may assume
+ticks_per_frame is a whole number, or that two frame boundaries are a whole
+number of ticks apart.
+
 Python integers are unbounded, so there is no overflow ceiling to design
 around. A 24 hour timeline is 1.0368e10 ticks, which is simply a large int.
 
@@ -113,8 +124,31 @@ def ticks_to_seconds(t: int) -> float:
 
 
 def frames_to_ticks(f: int, rate: FrameRate) -> int:
-    """Tick position of the start of frame ``f``."""
-    return round(Fraction(f) * rate.ticks_per_frame)
+    """Tick position of the start of frame ``f``. Rounds UP.
+
+    Ceiling, not nearest, and the difference only shows at a rate whose frame
+    boundaries are not whole ticks. There the true boundary falls between two
+    ticks and one of them has to be chosen; the ceiling is at or after the
+    boundary and less than a whole frame past it, so the frame index survives
+    the round trip:
+
+        ticks_to_frames(frames_to_ticks(f, rate), rate) == f
+
+    at every rate, including an arbitrary rational probed from a variable frame
+    rate file. Rounding to nearest breaks that. At 24249/1000 frame 2 begins at
+    9897.31 ticks; nearest gives 9897, which is still inside frame 1, and the
+    index comes back as 1.
+
+    This is deliberately not the same rule as :func:`snap_to_frame`, which
+    rounds to nearest. The two answer different questions. A frame index is an
+    identity and has to survive being converted and converted back. A trim
+    point is a position the user chose, and the nearest frame is the one they
+    meant.
+
+    At the nine broadcast rates the boundary is already a whole tick, so the
+    ceiling changes nothing.
+    """
+    return math.ceil(Fraction(f) * rate.ticks_per_frame)
 
 
 def ticks_to_frames(t: int, rate: FrameRate) -> int:
@@ -124,7 +158,11 @@ def ticks_to_frames(t: int, rate: FrameRate) -> int:
 
 
 def snap_to_frame(t: int, rate: FrameRate) -> int:
-    """Round ``t`` to the nearest frame boundary, halves rounding up."""
+    """Move ``t`` to the NEAREST frame boundary, halves rounding up.
+
+    Nearest, unlike :func:`frames_to_ticks`, which rounds up. See that
+    function's docstring for why the two rules differ.
+    """
     index = Fraction(t) / rate.ticks_per_frame + Fraction(1, 2)
     return frames_to_ticks(math.floor(index), rate)
 

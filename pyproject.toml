@@ -14,7 +14,7 @@ dependencies = [
 dev = ["pytest>=9.1"]
 
 [tool.setuptools]
-packages = ["core"]
+packages = ["core", "ui"]
 
 [tool.pytest.ini_options]
 minversion = "9.0"

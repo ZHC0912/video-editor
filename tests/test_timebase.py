@@ -122,7 +122,11 @@ class TestSecondsConversion:
 class TestFrameConversion:
     @pytest.mark.parametrize("rate,tpf", RATES, ids=lambda v: str(v))
     def test_round_trip_on_boundaries(self, rate: FrameRate, tpf: int) -> None:
-        for frame in (0, 1, 2, 99, 100000):
+        # A frame index is an identity: converting to ticks and back must
+        # return the same frame, at every rate, for every frame.
+        for frame in range(500):
+            assert ticks_to_frames(frames_to_ticks(frame, rate), rate) == frame
+        for frame in (99, 100000, 12345678):
             assert ticks_to_frames(frames_to_ticks(frame, rate), rate) == frame
 
     def test_ticks_to_frames_floors_within_a_frame(self) -> None:
@@ -180,3 +184,112 @@ class TestTimecode:
     def test_hours_do_not_wrap(self) -> None:
         rate = FrameRate(30, 1)
         assert ticks_to_timecode(30 * 3600 * TICKS_PER_SECOND, rate) == "30:00:00:00"
+
+
+class TestNonBroadcastRate:
+    """A rate that 120000 does not divide by.
+
+    The nine rates above all give a whole number of ticks per frame. A variable
+    frame rate file does not: ffprobe reports whatever average it computed, and
+    24249/1000 is a real example. Everything here must work without special
+    casing, and nothing may assume the frame boundaries are whole ticks apart.
+    """
+
+    RATE = FrameRate(24249, 1000)
+
+    def test_ticks_per_frame_is_a_fraction_and_not_a_whole_number(self) -> None:
+        tpf = self.RATE.ticks_per_frame
+        assert isinstance(tpf, Fraction)
+        assert tpf == Fraction(40000000, 8083)
+        assert tpf.denominator != 1, "this rate is only interesting if it does not divide"
+        assert float(tpf) == pytest.approx(4948.6576766)
+
+    def test_the_conversions_all_run(self) -> None:
+        rate = self.RATE
+        for frame in (0, 1, 2, 999, 100000):
+            ticks = frames_to_ticks(frame, rate)
+            assert isinstance(ticks, int)
+            # frames_to_ticks rounds up, so the tick is at or after the true
+            # boundary and less than one tick past it.
+            exact = Fraction(frame) * rate.ticks_per_frame
+            assert 0 <= Fraction(ticks) - exact < 1
+
+    def test_the_frame_index_round_trips_exactly(self) -> None:
+        # Frame 2 begins at 9897.31 ticks. Nearest would give 9897, and 9897
+        # is still inside frame 1, so the index would come back as 1 and a
+        # frame would have been lost simply by converting and converting back.
+        # Rounding up gives 9898, which is inside frame 2 where it belongs.
+        # This is the whole reason frames_to_ticks is a ceiling.
+        rate = self.RATE
+        assert frames_to_ticks(2, rate) == 9898
+        assert ticks_to_frames(9898, rate) == 2
+
+        for frame in range(500):
+            assert ticks_to_frames(frames_to_ticks(frame, rate), rate) == frame
+
+    def test_frames_to_ticks_multiplies_rather_than_accumulates(self) -> None:
+        # Adding a rounded per frame constant 14549 times drifts by thousands
+        # of ticks. Multiplying the exact Fraction does not.
+        rate = self.RATE
+        frames = 14549
+        accumulated = frames * frames_to_ticks(1, rate)
+        assert abs(accumulated - frames_to_ticks(frames, rate)) > 1000
+
+    @pytest.mark.parametrize(
+        "t", [0, 1, 2473, 2474, 4948, 4949, 9897, 120000, 123456789, 4_000_000_001]
+    )
+    def test_snap_to_frame_is_still_idempotent(self, t: int) -> None:
+        once = snap_to_frame(t, self.RATE)
+        assert snap_to_frame(once, self.RATE) == once
+        assert snap_to_frame(once, self.RATE) == once  # and stays put
+
+    def test_snapped_values_land_on_the_nearest_frame(self) -> None:
+        rate = self.RATE
+        for t in (0, 5000, 50_000, 1_000_000):
+            snapped = snap_to_frame(t, rate)
+            frame = ticks_to_frames(snapped, rate)
+            assert snapped == frames_to_ticks(frame, rate)
+            assert abs(snapped - t) <= round(rate.ticks_per_frame / 2) + 1
+
+    def test_timecode_is_well_formed(self) -> None:
+        rate = self.RATE
+        assert ticks_to_timecode(0, rate) == "00:00:00:00"
+        assert ticks_to_timecode(1 * TICKS_PER_SECOND, rate) == "00:00:01:00"
+        assert ticks_to_timecode(60 * TICKS_PER_SECOND, rate) == "00:01:00:14"
+        assert ticks_to_timecode(600 * TICKS_PER_SECOND, rate) == "00:10:06:05"
+
+    def test_timecode_frame_field_stays_in_range(self) -> None:
+        # The seconds field counts round(24.249) = 24 frames.
+        rate = self.RATE
+        for frame in range(0, 500):
+            text = ticks_to_timecode(frames_to_ticks(frame, rate), rate)
+            hh, mm, ss, ff = (int(part) for part in text.split(":"))
+            assert 0 <= ff < 24
+            assert 0 <= ss < 60
+            assert 0 <= mm < 60
+            assert hh == 0
+
+    def test_timecode_never_goes_backwards(self) -> None:
+        rate = self.RATE
+        previous = ""
+        for frame in range(0, 2000):
+            text = ticks_to_timecode(frames_to_ticks(frame, rate), rate)
+            assert text >= previous
+            previous = text
+
+    def test_no_drift_over_ten_minutes(self) -> None:
+        # The same guarantee as the broadcast rates, one tick weaker: stepping
+        # a frame at a time and multiplying agree to better than a whole tick,
+        # which is all that is available when the frame is not a whole number
+        # of ticks long.
+        rate = self.RATE
+        frames = round(600 * rate.as_float)
+        assert frames == 14549
+
+        stepwise = sum(rate.ticks_per_frame for _ in range(frames))
+        multiplied = frames_to_ticks(frames, rate)
+
+        assert isinstance(stepwise, Fraction)
+        assert stepwise.denominator != 1
+        assert abs(stepwise - multiplied) < 1
+        assert abs(stepwise - multiplied) == pytest.approx(0.463, abs=0.001)
