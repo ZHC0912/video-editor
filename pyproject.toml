@@ -1,0 +1,30 @@
+[project]
+name = "videditor"
+version = "0.1.0"
+description = "Offline desktop non-linear video editor"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.11",
+    "pydantic>=2.13",
+    "numpy>=2.5",
+    "Pillow>=12.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1"]
+
+[tool.setuptools]
+packages = ["core"]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = [
+    "slow: needs the vendored ffmpeg binaries and actually encodes media",
+]
+
+[tool.ruff]
+line-length = 90
+target-version = "py312"
