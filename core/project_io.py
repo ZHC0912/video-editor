@@ -15,9 +15,45 @@ from typing import Any
 
 from core.model import Project
 
-__all__ = ["SCHEMA_VERSION", "ProjectIOError", "save", "load", "to_dict", "from_dict"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "PROJECT_EXTENSION",
+    "PROJECT_FORMAT_NAME",
+    "ProjectIOError",
+    "is_project_path",
+    "with_project_extension",
+    "save",
+    "load",
+    "to_dict",
+    "from_dict",
+]
 
 SCHEMA_VERSION = 2
+
+#: The one place the project file extension is written down. The Open and Save
+#: dialogs both build their filters from this; three separate literals is how a
+#: project saved with one extension became invisible to a dialog filtering for
+#: another.
+PROJECT_EXTENSION = ".vedit"
+
+#: Human readable name of the format, for file dialog filters.
+PROJECT_FORMAT_NAME = "VidEditor project"
+
+
+def is_project_path(path: Path) -> bool:
+    """Whether a path names a project file, by extension. Case insensitive."""
+    return Path(path).suffix.lower() == PROJECT_EXTENSION
+
+
+def with_project_extension(path: Path) -> Path:
+    """Add the project extension when the name has none at all.
+
+    A name the user gave an extension to is left alone: they may be keeping
+    projects as ``.bak`` or some scheme of their own, and load() does not care
+    what a file is called.
+    """
+    path = Path(path)
+    return path if path.suffix else path.with_suffix(PROJECT_EXTENSION)
 
 
 class ProjectIOError(RuntimeError):

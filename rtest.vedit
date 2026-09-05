@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "project": {
+    "name": "rtest",
+    "width": 1920,
+    "height": 1080,
+    "frame_rate": {
+      "num": 30,
+      "den": 1
+    },
+    "sample_rate": 48000,
+    "tracks": [
+      {
+        "id": "v",
+        "name": "V1",
+        "kind": "video",
+        "clips": [
+          {
+            "id": "8699525cce034d408ae8f94ef12c7405",
+            "src": "C:\\Users\\User\\Videos\\test.mp4",
+            "src_in": 0,
+            "src_out": 460800,
+            "timeline_start": 0,
+            "gain_db": 0.0
+          },
+          {
+            "id": "1948ef7c4eef4c24a7390fd95b7f9f48",
+            "src": "C:\\Users\\User\\Videos\\test.mp4",
+            "src_in": 0,
+            "src_out": 460800,
+            "timeline_start": 600000,
+            "gain_db": 0.0
+          },
+          {
+            "id": "1f4e0e2775604ed6a6fa27678c578f4e",
+            "src": "C:\\Users\\User\\Videos\\test.mp4",
+            "src_in": 0,
+            "src_out": 460800,
+            "timeline_start": 1200000,
+            "gain_db": 0.0
+          }
+        ],
+        "muted": false
+      },
+      {
+        "id": "a",
+        "name": "A1",
+        "kind": "audio",
+        "clips": [
+          {
+            "id": "a144b3f15f2647e8bdce0b810ee477f2",
+            "src": "C:\\Users\\User\\Videos\\test.mp4",
+            "src_in": 0,
+            "src_out": 460800,
+            "timeline_start": 0,
+            "gain_db": 0.0
+          }
+        ],
+        "muted": false
+      }
+    ]
+  }
+}

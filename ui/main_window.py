@@ -9,11 +9,13 @@ synchronous; rendering is not, and runs on a QThread.
 
 from __future__ import annotations
 
+import os
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRect, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QGuiApplication, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QProgressDialog,
     QSplitter,
     QStatusBar,
@@ -31,12 +34,25 @@ from PySide6.QtWidgets import (
 from core.filtergraph import RenderError, build_full
 from core.model import MediaInfo, Project, Track
 from core.probe import ProbeError, probe
-from core.project_io import ProjectIOError, load, save
+from core.project_io import (
+    PROJECT_EXTENSION,
+    PROJECT_FORMAT_NAME,
+    ProjectIOError,
+    is_project_path,
+    load,
+    save,
+    with_project_extension,
+)
 from core.render import render
-from ui import format_utils, theme, window_geometry
+from ui import format_utils, poster, theme, window_geometry
 from ui.dialogs import show_error, split_error
+from ui.media_bin import MediaBinList, has_droppable_files, dropped_paths, set_drop_highlight
 from ui.preview_panel import PreviewPanel
 from ui.single_player_controller import SinglePlayerController
+from ui.timeline.timeline_view import FitOutcome, TimelinePanel
+from ui.workers.audio_bed_worker import AudioBedWorker
+from ui.workers.probe_worker import ProbeQueue
+from ui.workers.thumbnail_worker import shared_thumbnail_cache
 
 __all__ = ["MainWindow"]
 
@@ -44,7 +60,12 @@ MEDIA_FILTER = (
     "Media files (*.mp4 *.mov *.mkv *.avi *.m4v *.webm *.wav *.mp3 *.aac *.flac);;"
     "All files (*)"
 )
-PROJECT_FILTER = "VidEditor project (*.vidproj);;All files (*)"
+#: One filter, built from the extension core defines, used by Open and by
+#: Save As. The All files fallback keeps a renamed or oddly named project
+#: reachable, because load() does not care what a file is called.
+PROJECT_FILTER = (
+    f"{PROJECT_FORMAT_NAME} (*{PROJECT_EXTENSION});;All files (*)"
+)
 
 
 class _RenderWorker(QObject):
@@ -94,12 +115,24 @@ class MainWindow(QMainWindow):
 
         self._project: Project | None = None
         self._project_path: Path | None = None
-        self._media: list[MediaInfo] = []
+        self._dirty = False
+        # Bin contents, keyed by normalised path. Rows exist before their
+        # probe returns, so a key may be present with no MediaInfo yet.
+        self._media: dict[str, MediaInfo] = {}
 
         self._render_thread: QThread | None = None
         self._render_worker: _RenderWorker | None = None
         self._render_cancel: threading.Event | None = None
         self._render_dialog: QProgressDialog | None = None
+
+        # One bed for the window. Phase 5 consumes it; nothing does yet, so
+        # for now it only reports into the status bar. It is wired up now
+        # because every trigger for it already exists.
+        self.audio_bed = AudioBedWorker(self)
+        self.audio_bed.bed_ready.connect(self._on_bed_ready)
+        self.audio_bed.bed_failed.connect(self._on_bed_failed)
+        self.audio_bed.bed_invalidated.connect(self._on_bed_invalidated)
+        self.audio_bed.bed_unavailable.connect(self._on_bed_unavailable)
 
         self._build_ui()
         self._build_menus()
@@ -129,9 +162,31 @@ class MainWindow(QMainWindow):
     # -- construction -----------------------------------------------------
 
     def _build_ui(self) -> None:
-        self.media_list = QListWidget(self)
+        self.media_list = MediaBinList(self.handle_dropped_paths, self)
         self.media_list.setAlternatingRowColors(False)
+        self.media_list.setIconSize(poster.POSTER_SIZE)
+        # The poster takes a fixed 114px of every row, so the summary text is
+        # elided to fit rather than pushing a horizontal scrollbar under the
+        # list.
+        self.media_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.media_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.media_list.setWordWrap(False)
         self.media_list.itemDoubleClicked.connect(self._on_media_activated)
+
+        # The same LRU the timeline's filmstrips use. A clip cut from a file
+        # already in the bin costs no second decode.
+        self._thumbnails = shared_thumbnail_cache()
+        self._thumbnails.thumbnail_ready.connect(self._on_bin_thumbnail)
+
+        # Dropped files are probed off the GUI thread; rows appear at once and
+        # fill in as each probe returns.
+        self._bin_keys: set[str] = set()
+        self._probes = ProbeQueue(self)
+        self._probes.probed.connect(self._on_probe_finished)
+        self._probes.failed.connect(self._on_probe_failed)
+        self._probes.batch_finished.connect(self._on_probe_batch_finished)
 
         bin_panel = QFrame(self)
         bin_panel.setProperty("surface", "panel")
@@ -145,7 +200,8 @@ class MainWindow(QMainWindow):
         bin_layout.addWidget(bin_title)
         bin_layout.addWidget(self.media_list, 1)
         bin_layout.addWidget(bin_hint)
-        bin_panel.setMinimumWidth(240)
+        # Wide enough for a poster plus two lines of metadata beside it.
+        bin_panel.setMinimumWidth(330)
 
         self.preview = PreviewPanel(self)
         self.player = SinglePlayerController(self.preview.stage, self)
@@ -162,30 +218,40 @@ class MainWindow(QMainWindow):
         top.addWidget(preview_panel)
         top.setStretchFactor(0, 0)
         top.setStretchFactor(1, 1)
-        top.setSizes([280, 1100])
+        top.setSizes([360, 1040])
 
-        # Phase 3 replaces this with the QGraphicsView timeline.
-        self.timeline_placeholder = QFrame(self)
-        self.timeline_placeholder.setProperty("surface", "timeline")
-        placeholder_layout = QVBoxLayout(self.timeline_placeholder)
-        placeholder_label = QLabel("Timeline arrives in Phase 3", self)
-        placeholder_label.setProperty("muted", True)
-        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder_layout.addWidget(placeholder_label)
-        self.timeline_placeholder.setMinimumHeight(180)
+        self.timeline = TimelinePanel(self)
+        self.timeline.mute_toggled.connect(self._on_track_muted)
+        self.timeline.add_track_requested.connect(self._on_add_track)
+        self.timeline.fitted.connect(self._on_timeline_fitted)
+        self.preview.position_changed.connect(self.timeline.set_playhead)
+
+        timeline_frame = QFrame(self)
+        timeline_frame.setProperty("surface", "timeline")
+        timeline_layout = QVBoxLayout(timeline_frame)
+        timeline_layout.setContentsMargins(4, 4, 4, 4)
+        timeline_layout.addWidget(self.timeline)
+        timeline_frame.setMinimumHeight(180)
 
         split = QSplitter(Qt.Orientation.Vertical, self)
         split.addWidget(top)
-        split.addWidget(self.timeline_placeholder)
+        split.addWidget(timeline_frame)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
         split.setSizes([560, 260])
 
-        container = QWidget(self)
+        # A QFrame rather than a bare QWidget so the drag-over border from the
+        # stylesheet has something to paint on.
+        container = QFrame(self)
+        self._drop_frame = container
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(split)
         self.setCentralWidget(container)
+
+        # Dropping on the wrong panel is the ordinary mistake, so the whole
+        # window takes files, not just the bin.
+        self.setAcceptDrops(True)
 
         self._status_name = QLabel("", self)
         self._status_duration = QLabel("", self)
@@ -223,6 +289,8 @@ class MainWindow(QMainWindow):
     # -- project ----------------------------------------------------------
 
     def new_project(self) -> None:
+        if not self._confirm_discard_changes():
+            return
         project = Project(
             name="Untitled",
             tracks=[
@@ -233,17 +301,70 @@ class MainWindow(QMainWindow):
         self._set_project(project, None)
 
     def open_project(self) -> None:
+        if not self._confirm_discard_changes():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Open project", "", PROJECT_FILTER
         )
         if not path:
             return
+        self.load_project_file(Path(path), prompt=False)
+
+    def load_project_file(self, path: Path, prompt: bool = True) -> bool:
+        """Open a project from a known path. Used by File > Open and by drops."""
+        if prompt and not self._confirm_discard_changes():
+            return False
         try:
-            project = load(Path(path))
+            project = load(path)
         except (ProjectIOError, ValueError, OSError) as exc:
             show_error(self, "Could not open project", *split_error(exc))
-            return
-        self._set_project(project, Path(path))
+            return False
+        self._set_project(project, path)
+        self.statusBar().showMessage(f"Opened {path.name}", 4000)
+        return True
+
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    def mark_dirty(self) -> None:
+        """The one place unsaved-changes state is turned on.
+
+        Phase 3's track controls call this directly, because they mutate the
+        project directly. In Phase 4 that stops: CommandStack.push becomes the
+        only caller, so anything undoable marks the project dirty by virtue of
+        being a command, and no new control can forget to. The direct calls
+        below disappear along with the direct mutations they sit in.
+        """
+        self._dirty = True
+
+    def _confirm_discard_changes(self) -> bool:
+        """Ask before throwing away unsaved edits. True means carry on.
+
+        Phase 6 owns the project lifecycle properly, including prompting on
+        close and autosave recovery. This is the minimum needed so that
+        dropping a project file cannot silently discard work.
+        """
+        if not self._dirty or self._project is None:
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Unsaved changes")
+        box.setText(f"Save changes to {self._project.name} first?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        answer = box.exec()
+
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            self.save_project()
+            return not self._dirty
+        return True
 
     def save_project(self) -> None:
         if self._project is None:
@@ -257,11 +378,16 @@ class MainWindow(QMainWindow):
         if self._project is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save project as", f"{self._project.name}.vidproj", PROJECT_FILTER
+            self,
+            "Save project as",
+            f"{self._project.name}{PROJECT_EXTENSION}",
+            PROJECT_FILTER,
         )
         if not path:
             return
-        self._write_project(Path(path))
+        # A name typed without any extension gets the project one, so it is
+        # still visible to the Open dialog's filter next time.
+        self._write_project(with_project_extension(Path(path)))
 
     def _write_project(self, path: Path) -> None:
         try:
@@ -270,14 +396,124 @@ class MainWindow(QMainWindow):
             show_error(self, "Could not save project", *split_error(exc))
             return
         self._project_path = path
+        self._dirty = False
         self._refresh_status()
         self.statusBar().showMessage(f"Saved {path.name}", 4000)
 
     def _set_project(self, project: Project, path: Path | None) -> None:
         self._project = project
         self._project_path = path
+        self._dirty = False
         self.preview.set_project(project)
+        self.timeline.set_project(project)
+        # Loading a project invalidates the bed, same as any audio edit.
+        self.audio_bed.set_project(project)
         self._refresh_status()
+
+    # -- track edits ------------------------------------------------------
+
+    def _on_track_muted(self, track_id: str, muted: bool) -> None:
+        """Mute toggle in the track header.
+
+        Phase 4 routes this through a SetTrackMuted command so it can be
+        undone. For now it is a direct change, because the header control is
+        part of this phase's layout and a dead toggle would be worse than a
+        temporary one.
+        """
+        if self._project is None:
+            return
+        for track in self._project.tracks:
+            if track.id == track_id:
+                if track.muted == muted:
+                    return
+                track.muted = muted
+                # Phase 4 replaces this with SetTrackMuted going through the
+                # command stack, which marks the project dirty for us.
+                self.mark_dirty()
+                break
+        else:
+            return
+
+        self.timeline.set_project(self._project)
+        self._refresh_status()
+        if self._track_kind(track_id) == "audio":
+            self.audio_bed.invalidate()
+
+    def _on_add_track(self, kind: str) -> None:
+        """Add-track buttons in the header.
+
+        Phase 4 replaces this with the AddTrack command, which carries the
+        same refusal. The video button is already disabled when a video track
+        exists; this check is the second line of the same rule.
+        """
+        if self._project is None:
+            return
+        if kind == "video" and self._project.video_tracks():
+            show_error(
+                self,
+                "Cannot add a video track",
+                "Multiple video tracks require compositing, "
+                "not supported in this version.",
+            )
+            return
+
+        existing = len(
+            self._project.video_tracks()
+            if kind == "video"
+            else self._project.audio_tracks()
+        )
+        prefix = "V" if kind == "video" else "A"
+        self._project.tracks.append(
+            Track(name=f"{prefix}{existing + 1}", kind=kind)
+        )
+        # Phase 4 replaces this with the AddTrack command.
+        self.mark_dirty()
+        self.timeline.set_project(self._project)
+        if kind == "audio":
+            self.audio_bed.invalidate()
+
+    @Slot(str, float, float)
+    def _on_timeline_fitted(
+        self, outcome: str, pixels_per_second: float, visible: float
+    ) -> None:
+        """Say what Shift+Z managed, rather than appearing to do nothing."""
+        if outcome == FitOutcome.EMPTY:
+            message = "Nothing to fit: the timeline is empty"
+        elif outcome == FitOutcome.CLAMPED:
+            message = (
+                f"Fit to window: project is longer than the minimum zoom allows, "
+                f"showing {visible:.0%} of it at {pixels_per_second:g} px/s"
+            )
+        else:
+            message = (
+                f"Fit to window: whole project visible at {pixels_per_second:.3g} px/s"
+            )
+        self.statusBar().showMessage(message, 6000)
+
+    def _track_kind(self, track_id: str) -> str | None:
+        if self._project is None:
+            return None
+        for track in self._project.tracks:
+            if track.id == track_id:
+                return track.kind
+        return None
+
+    # -- audio bed --------------------------------------------------------
+
+    def _on_bed_ready(self, path: str) -> None:
+        self.preview.set_status(f"Audio bed ready: {Path(path).name}")
+        self.statusBar().showMessage("Audio bed rendered", 4000)
+
+    def _on_bed_failed(self, message: str) -> None:
+        self.preview.set_status("Audio bed failed")
+        self.statusBar().showMessage(f"Audio bed failed: {message}", 8000)
+
+    def _on_bed_invalidated(self) -> None:
+        if self._project is not None and self._project.has_audio:
+            self.preview.set_status("Audio bed rendering...")
+
+    def _on_bed_unavailable(self) -> None:
+        self.preview.set_status("")
 
     def _refresh_status(self) -> None:
         if self._project is None:
@@ -300,37 +536,186 @@ class MainWindow(QMainWindow):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Import media", "", MEDIA_FILTER
         )
-        failures: list[str] = []
-        for raw in paths:
-            try:
-                info = probe(Path(raw))
-            except ProbeError as exc:
-                failures.append(f"{Path(raw).name}\n{split_error(exc)[0]}")
-                continue
-            self._add_media(info)
+        if paths:
+            self.import_media_paths(Path(p) for p in paths)
 
-        if failures:
-            show_error(
-                self,
-                "Some files could not be imported",
-                f"{len(failures)} of {len(paths)} files could not be read.",
-                "\n\n".join(failures),
-            )
+    def import_media_paths(self, paths: Iterable[Path]) -> int:
+        """Add files to the bin, probing them in the background.
+
+        Every row appears at once with its filename and a placeholder, then
+        fills in as its probe returns. Twenty files therefore cost twenty
+        background ffprobe calls and no frozen window.
+
+        Returns how many rows were actually created; files already in the bin
+        are skipped rather than added twice.
+        """
+        fresh: list[Path] = []
+        for path in paths:
+            key = self._media_key(path)
+            if key in self._bin_keys:
+                continue
+            self._bin_keys.add(key)
+            fresh.append(path)
+            self._create_bin_row(path)
+
+        if fresh:
+            self._probes.submit(fresh)
+        return len(fresh)
+
+    @staticmethod
+    def _media_key(path: Path) -> str:
+        """One identity per file, so a drop cannot add the same file twice."""
+        return os.path.normcase(str(Path(path).absolute()))
+
+    def _bin_row(self, key: str) -> QListWidgetItem | None:
+        for row in range(self.media_list.count()):
+            item = self.media_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == key:
+                return item
+        return None
+
+    def _create_bin_row(self, path: Path) -> QListWidgetItem:
+        """A row that exists before anything is known about the file."""
+        item = QListWidgetItem(f"{Path(path).name}\nReading...")
+        item.setData(Qt.ItemDataRole.UserRole, self._media_key(path))
+        item.setToolTip(str(path))
+        item.setIcon(QIcon(poster.placeholder_pixmap()))
+        self.media_list.addItem(item)
+        return item
 
     def _add_media(self, info: MediaInfo) -> None:
-        self._media.append(info)
-        item = QListWidgetItem(
+        """Record a completed probe and fill in its row, creating it if needed."""
+        key = self._media_key(info.path)
+        self._bin_keys.add(key)
+        self._media[key] = info
+        item = self._bin_row(key) or self._create_bin_row(info.path)
+        self._fill_bin_row(item, info)
+
+    def _fill_bin_row(self, item: QListWidgetItem, info: MediaInfo) -> None:
+        item.setText(
             f"{format_utils.media_title(info)}\n{format_utils.media_summary(info)}"
         )
         item.setToolTip(str(info.path))
-        item.setData(Qt.ItemDataRole.UserRole, len(self._media) - 1)
-        self.media_list.addItem(item)
+
+        if not info.has_video:
+            item.setIcon(QIcon(poster.audio_glyph_pixmap()))
+            return
+
+        tick = poster.poster_tick(info)
+        frame = self._thumbnails.peek(info.path, tick)
+        if frame is None:
+            item.setIcon(QIcon(poster.placeholder_pixmap()))
+            self._thumbnails.request(info.path, tick)
+        else:
+            item.setIcon(QIcon(poster.fit_poster(frame)))
+
+    def _mark_bin_row_failed(self, path: str, reason: str) -> None:
+        item = self._bin_row(self._media_key(Path(path)))
+        if item is None:
+            return
+        item.setText(f"{Path(path).name}\nCould not be read")
+        item.setToolTip(f"{path}\n{reason}")
+
+    @Slot(str, object)
+    def _on_probe_finished(self, path: str, info: MediaInfo) -> None:
+        self._add_media(info)
+
+    @Slot(str, str)
+    def _on_probe_failed(self, path: str, reason: str) -> None:
+        self._mark_bin_row_failed(path, reason)
+
+    @Slot(int, object)
+    def _on_probe_batch_finished(self, _batch: int, failures: list) -> None:
+        """One summary for the whole drop, never a dialog per bad file."""
+        if not failures:
+            return
+        for path, _reason in failures:
+            key = self._media_key(Path(path))
+            self._bin_keys.discard(key)
+            item = self._bin_row(key)
+            if item is not None:
+                self.media_list.takeItem(self.media_list.row(item))
+
+        detail = "\n\n".join(f"{Path(p).name}\n{reason}" for p, reason in failures)
+        show_error(
+            self,
+            "Some files could not be imported",
+            f"{len(failures)} file(s) could not be read and were skipped.",
+            detail,
+        )
+
+    def _on_bin_thumbnail(self, src: str, tick: int) -> None:
+        """A poster frame arrived. Swap it into whichever rows wanted it."""
+        for row in range(self.media_list.count()):
+            item = self.media_list.item(row)
+            info = self._media.get(item.data(Qt.ItemDataRole.UserRole))
+            if info is None or not info.has_video or str(info.path) != src:
+                continue
+            frame = self._thumbnails.peek(info.path, poster.poster_tick(info))
+            if frame is not None:
+                item.setIcon(QIcon(poster.fit_poster(frame)))
 
     def _on_media_activated(self, item: QListWidgetItem) -> None:
-        index = item.data(Qt.ItemDataRole.UserRole)
-        info = self._media[index]
+        info = self._media.get(item.data(Qt.ItemDataRole.UserRole))
+        if info is None:
+            # Still being probed. Nothing to play yet.
+            return
         self.player.load(info.path)
         self.player.play()
+
+    # -- drag and drop ----------------------------------------------------
+
+    def handle_dropped_paths(self, paths: Iterable[Path]) -> None:
+        """Route a drop: project files are opened, everything else imported."""
+        paths = [Path(p) for p in paths]
+        projects = [p for p in paths if is_project_path(p)]
+        media = [p for p in paths if not is_project_path(p)]
+
+        if projects:
+            self.load_project_file(projects[0])
+            if len(projects) > 1:
+                self.statusBar().showMessage(
+                    f"Opened {projects[0].name}; "
+                    f"{len(projects) - 1} other project file(s) ignored",
+                    6000,
+                )
+
+        if media:
+            added = self.import_media_paths(media)
+            skipped = len(media) - added
+            message = f"Importing {added} file(s)"
+            if skipped:
+                message += f", {skipped} already in the bin"
+            self.statusBar().showMessage(message, 4000)
+
+    def dragEnterEvent(self, event) -> None:
+        if has_droppable_files(event.mimeData()):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.acceptProposedAction()
+            set_drop_highlight(self._drop_frame, True)
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if has_droppable_files(event.mimeData()):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        set_drop_highlight(self._drop_frame, False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        set_drop_highlight(self._drop_frame, False)
+        paths = dropped_paths(event.mimeData())
+        if not paths:
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.acceptProposedAction()
+        self.handle_dropped_paths(paths)
 
     # -- export -----------------------------------------------------------
 
@@ -428,8 +813,21 @@ class MainWindow(QMainWindow):
     # -- shutdown ---------------------------------------------------------
 
     def closeEvent(self, event) -> None:
+        """Ask about unsaved work before tearing anything down.
+
+        The prompt comes first and nothing is stopped until it is answered,
+        so cancelling leaves a window that still has its export running, its
+        bed worker alive and its preview loaded. Tearing down and then asking
+        would leave a half dead window if the answer was Cancel.
+        """
+        if not self._confirm_discard_changes():
+            event.ignore()
+            return
+
         if self._render_cancel is not None:
             self._render_cancel.set()
         self._teardown_export()
+        self.audio_bed.shutdown()
+        self.audio_bed.discard_bed()
         self.player.clear()
         super().closeEvent(event)

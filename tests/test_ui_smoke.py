@@ -296,6 +296,9 @@ class TestMainWindow:
     def window(self, qapp: QApplication) -> MainWindow:
         w = MainWindow()
         yield w
+        # Discard any edits a test made: close() now prompts, and a
+        # modal dialog in a fixture teardown would hang the suite.
+        w._dirty = False
         w.close()
         w.deleteLater()
 
@@ -371,11 +374,234 @@ class TestMainWindow:
     def test_the_preview_declares_itself_silent(self, window: MainWindow) -> None:
         assert window.preview._volume.isEnabled() is False
 
+    def test_the_timeline_renders_the_project(self, window: MainWindow) -> None:
+        assert [lane.kind for lane in window.timeline.scene.lanes()] == [
+            "video",
+            "audio",
+        ]
+
+    def test_the_preview_drives_the_playhead(self, window: MainWindow) -> None:
+        window.preview.report_duration(10 * SEC)
+        window.preview.report_position(2 * SEC)
+        assert window.timeline.scene.playhead_ticks() == 2 * SEC
+
+    def test_add_video_track_is_disabled_from_the_start(
+        self, window: MainWindow
+    ) -> None:
+        # A new project already has V1, so the affordance is off immediately.
+        assert window.timeline.headers.add_video_button.isEnabled() is False
+
+    def test_adding_an_audio_track_updates_the_timeline(
+        self, window: MainWindow
+    ) -> None:
+        before = len(window.timeline.scene.lanes())
+        window._on_add_track("audio")
+        assert len(window.timeline.scene.lanes()) == before + 1
+        assert len(window._project.audio_tracks()) == 2
+
+    def test_adding_a_second_video_track_is_refused(
+        self, window: MainWindow, monkeypatch
+    ) -> None:
+        shown: list[tuple] = []
+        monkeypatch.setattr(
+            "ui.main_window.show_error", lambda *args: shown.append(args)
+        )
+        window._on_add_track("video")
+        assert len(window._project.video_tracks()) == 1
+        assert len(shown) == 1
+        assert "compositing" in shown[0][2]
+
+    def test_muting_an_audio_track_invalidates_the_bed(
+        self, window: MainWindow
+    ) -> None:
+        seen: list[int] = []
+        window.audio_bed.bed_invalidated.connect(lambda: seen.append(1))
+        audio_track = window._project.audio_tracks()[0]
+        window._on_track_muted(audio_track.id, True)
+        assert audio_track.muted is True
+        assert seen == [1]
+
+    def test_muting_a_video_track_does_not_invalidate_the_bed(
+        self, window: MainWindow
+    ) -> None:
+        seen: list[int] = []
+        window.audio_bed.bed_invalidated.connect(lambda: seen.append(1))
+        video_track = window._project.video_tracks()[0]
+        window._on_track_muted(video_track.id, True)
+        assert video_track.muted is True
+        assert seen == []
+
+    def test_loading_a_project_points_the_bed_at_it(
+        self, window: MainWindow
+    ) -> None:
+        project = Project(name="loaded", tracks=[Track(name="V1", kind="video")])
+        window._set_project(project, None)
+        assert window.audio_bed._project is project
+
     def test_status_bar_reports_the_project(self, window: MainWindow) -> None:
         assert window._status_name.text() == "Untitled"
         assert window._status_duration.text() == "00:00:00:00"
         assert "1920x1080" in window._status_rate.text()
         assert "30 fps" in window._status_rate.text()
+
+    def test_media_bin_shows_a_poster_frame(self, window: MainWindow) -> None:
+        from pathlib import Path
+
+        from core.model import MediaInfo
+        from ui import poster
+
+        window._add_media(
+            MediaInfo(
+                path=Path("C:/media/take.mp4"),
+                duration_ticks=100 * SEC,
+                width=1920,
+                height=1080,
+                frame_rate=FrameRate(30, 1),
+                has_video=True,
+                has_audio=True,
+                sample_rate=48000,
+            )
+        )
+        item = window.media_list.item(0)
+        # The row is there and drawn before any decode has finished.
+        assert not item.icon().isNull()
+        assert window.media_list.iconSize() == poster.POSTER_SIZE
+
+    def test_the_bin_populates_before_any_thumbnail_arrives(
+        self, window: MainWindow, monkeypatch
+    ) -> None:
+        from pathlib import Path
+
+        from core.model import MediaInfo
+
+        # No worker may run at all: the list must not block on one.
+        started: list[object] = []
+        monkeypatch.setattr(
+            "ui.workers.thumbnail_worker.media_pool",
+            lambda: type("P", (), {"start": lambda self, job: started.append(job)})(),
+        )
+        window._thumbnails._cache.clear()
+        window._thumbnails._in_flight.clear()
+
+        for index in range(3):
+            window._add_media(
+                MediaInfo(
+                    path=Path(f"C:/media/take{index}.mp4"),
+                    duration_ticks=60 * SEC,
+                    width=1920,
+                    height=1080,
+                    frame_rate=FrameRate(30, 1),
+                    has_video=True,
+                    has_audio=True,
+                )
+            )
+
+        assert window.media_list.count() == 3
+        for row in range(3):
+            assert not window.media_list.item(row).icon().isNull()
+        # The requests were made, but nothing waited for them.
+        assert len(started) == 3
+
+    def test_a_poster_frame_updates_the_row_in_place(
+        self, window: MainWindow
+    ) -> None:
+        from pathlib import Path
+
+        from PySide6.QtGui import QColor, QPixmap
+
+        from core.model import MediaInfo
+        from ui import poster
+        from ui.workers.thumbnail_worker import quantise_tick
+
+        path = Path("C:/media/late.mp4")
+        info = MediaInfo(
+            path=path,
+            duration_ticks=100 * SEC,
+            width=1920,
+            height=1080,
+            frame_rate=FrameRate(30, 1),
+            has_video=True,
+            has_audio=False,
+        )
+        window._add_media(info)
+        row = window.media_list.count() - 1
+        item = window.media_list.item(row)
+        placeholder = item.icon().pixmap(poster.POSTER_SIZE).toImage()
+
+        # Deliver a frame the way the worker would.
+        tick = quantise_tick(poster.poster_tick(info))
+        frame = QPixmap(160, 90)
+        frame.fill(QColor("#ff00ff"))
+        window._thumbnails._cache[(str(path), tick)] = frame
+        window._thumbnails.thumbnail_ready.emit(str(path), tick)
+
+        assert window.media_list.count() == row + 1, "a row was added, not updated"
+        updated = window.media_list.item(row).icon().pixmap(poster.POSTER_SIZE).toImage()
+        assert updated != placeholder
+
+    def test_the_poster_frame_is_taken_from_inside_the_file(self) -> None:
+        from pathlib import Path
+
+        from core.model import MediaInfo
+        from ui import poster
+
+        # Not frame zero: many files open on black or a fade.
+        info = MediaInfo(path=Path("a.mp4"), duration_ticks=100 * SEC, has_video=True)
+        assert poster.poster_tick(info) == 10 * SEC
+        assert poster.poster_tick(info) > 0
+
+    def test_an_audio_only_file_gets_a_glyph_not_a_broken_image(
+        self, window: MainWindow, monkeypatch
+    ) -> None:
+        from pathlib import Path
+
+        from core.model import MediaInfo
+
+        started: list[object] = []
+        monkeypatch.setattr(
+            "ui.workers.thumbnail_worker.media_pool",
+            lambda: type("P", (), {"start": lambda self, job: started.append(job)})(),
+        )
+        window._add_media(
+            MediaInfo(
+                path=Path("C:/media/music.wav"),
+                duration_ticks=60 * SEC,
+                has_video=False,
+                has_audio=True,
+                sample_rate=48000,
+            )
+        )
+        item = window.media_list.item(window.media_list.count() - 1)
+        assert not item.icon().isNull()
+        # No decode is attempted for a file with no picture.
+        assert started == []
+
+    def test_portrait_footage_is_not_distorted(self) -> None:
+        from PySide6.QtGui import QColor, QPixmap
+
+        from ui import poster
+
+        # The 358x642 test file: taller than it is wide.
+        frame = QPixmap(358, 642)
+        frame.fill(QColor("#00ff00"))
+        fitted = poster.fit_poster(frame)
+
+        assert fitted.size() == poster.POSTER_SIZE
+        image = fitted.toImage()
+        green = [
+            x
+            for x in range(image.width())
+            if QColor(image.pixel(x, image.height() // 2)).green() > 200
+        ]
+        # The frame keeps 358:642, so at 64 tall it is about 36 wide, centred
+        # in the 114 wide box rather than stretched across it.
+        assert 30 <= len(green) <= 42, f"portrait frame occupies {len(green)}px"
+        assert abs((green[0] + green[-1]) / 2 - image.width() / 2) <= 2
+
+    def test_the_bin_and_the_timeline_share_one_cache(
+        self, window: MainWindow
+    ) -> None:
+        assert window._thumbnails is window.timeline.scene.thumbnails
 
     def test_media_bin_shows_a_summary_line(self, window: MainWindow) -> None:
         from core.model import MediaInfo
@@ -512,6 +738,7 @@ class TestProgressWiring:
         assert window._render_dialog.value() == 1000
 
         window._teardown_export()
+        window._dirty = False
         window.close()
         window.deleteLater()
 
@@ -522,5 +749,6 @@ class TestProgressWiring:
         window._render_cancel = threading.Event()
         window._on_export_cancelled()
         assert window._render_cancel.is_set()
+        window._dirty = False
         window.close()
         window.deleteLater()

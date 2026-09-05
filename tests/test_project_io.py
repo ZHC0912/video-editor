@@ -71,7 +71,7 @@ def project_dir(tmp_path: Path) -> Path:
 
 def test_round_trip_preserves_every_field(project_dir: Path) -> None:
     original = build_project(project_dir / "media")
-    path = project_dir / "edit.vidproj"
+    path = project_dir / "edit.vedit"
     save(original, path)
     restored = load(path)
 
@@ -99,7 +99,7 @@ def test_round_trip_preserves_every_field(project_dir: Path) -> None:
 
 
 def test_round_trip_of_an_empty_project(tmp_path: Path) -> None:
-    path = tmp_path / "empty.vidproj"
+    path = tmp_path / "empty.vedit"
     save(Project(name="Empty"), path)
     restored = load(path)
     assert restored.name == "Empty"
@@ -108,7 +108,7 @@ def test_round_trip_of_an_empty_project(tmp_path: Path) -> None:
 
 
 def test_file_layout(project_dir: Path) -> None:
-    path = project_dir / "edit.vidproj"
+    path = project_dir / "edit.vedit"
     save(build_project(project_dir / "media"), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["schema_version"] == SCHEMA_VERSION == 2
@@ -116,7 +116,7 @@ def test_file_layout(project_dir: Path) -> None:
 
 
 def test_paths_under_the_project_tree_are_stored_relative(project_dir: Path) -> None:
-    path = project_dir / "edit.vidproj"
+    path = project_dir / "edit.vedit"
     save(build_project(project_dir / "media"), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     stored = [c["src"] for t in raw["project"]["tracks"] for c in t["clips"]]
@@ -141,7 +141,7 @@ def test_paths_outside_the_project_tree_stay_absolute(tmp_path: Path) -> None:
             )
         ],
     )
-    path = project_dir / "edit.vidproj"
+    path = project_dir / "edit.vedit"
     save(project, path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     stored = raw["project"]["tracks"][0]["clips"][0]["src"]
@@ -152,19 +152,19 @@ def test_paths_outside_the_project_tree_stay_absolute(tmp_path: Path) -> None:
 def test_moving_the_project_folder_keeps_relative_media_working(
     project_dir: Path,
 ) -> None:
-    path = project_dir / "edit.vidproj"
+    path = project_dir / "edit.vedit"
     save(build_project(project_dir / "media"), path)
 
     moved_root = project_dir.parent / "moved"
     project_dir.rename(moved_root)
-    restored = load(moved_root / "edit.vidproj")
+    restored = load(moved_root / "edit.vedit")
 
     resolved = restored.tracks[0].clips[0].src
     assert resolved == (moved_root / "media" / "a.mp4").resolve()
 
 
 def test_validation_still_runs_on_load(tmp_path: Path) -> None:
-    path = tmp_path / "bad.vidproj"
+    path = tmp_path / "bad.vedit"
     path.write_text(
         json.dumps(
             {
@@ -207,7 +207,7 @@ def test_validation_still_runs_on_load(tmp_path: Path) -> None:
 
 
 def test_unknown_schema_version_is_refused(tmp_path: Path) -> None:
-    path = tmp_path / "future.vidproj"
+    path = tmp_path / "future.vedit"
     path.write_text(
         json.dumps({"schema_version": 99, "project": {"name": "p"}}), encoding="utf-8"
     )
@@ -216,20 +216,20 @@ def test_unknown_schema_version_is_refused(tmp_path: Path) -> None:
 
 
 def test_malformed_file_is_refused(tmp_path: Path) -> None:
-    path = tmp_path / "junk.vidproj"
+    path = tmp_path / "junk.vedit"
     path.write_text("not json at all", encoding="utf-8")
     with pytest.raises(ProjectIOError):
         load(path)
 
 
 def test_missing_project_object_is_refused(tmp_path: Path) -> None:
-    path = tmp_path / "hollow.vidproj"
+    path = tmp_path / "hollow.vedit"
     path.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
     with pytest.raises(ProjectIOError):
         load(path)
 
 
 def test_save_creates_the_containing_directory(tmp_path: Path) -> None:
-    path = tmp_path / "nested" / "deeper" / "edit.vidproj"
+    path = tmp_path / "nested" / "deeper" / "edit.vedit"
     save(Project(name="p"), path)
     assert path.is_file()

@@ -597,6 +597,15 @@ Command pattern. Pure Python, no Qt. All time arguments are int ticks.
       can_undo() / can_redo() / undo_label() / redo_label()
       No Qt. MainWindow wraps it and emits the signals.
 
+  DIRTY FLAG: Phase 3 left a working save-if-dirty prompt on MainWindow, driven by
+  _dirty and reached through mark_dirty(). It is currently called by the two controls
+  that mutate the project directly, the mute toggle and add-track. Move that: the
+  MainWindow wrapper around CommandStack.push calls mark_dirty(), and the direct calls
+  go away with the direct mutations they sit in. Anything undoable is then dirty by
+  virtue of being a command, and a new control cannot forget to mark it.
+  tests/test_media_drop.py::test_no_control_sets_the_flag_directly asserts _dirty is
+  only ever set True inside mark_dirty; keep it passing.
+
 === ui/timeline/interaction.py ===
 
 DRAG TO MOVE:

@@ -169,6 +169,12 @@ QSplitter::handle:hover {
     background: $border;
 }
 
+/* ---- drag and drop target ---- */
+
+QFrame[dropActive="true"], QListWidget[dropActive="true"] {
+    border: 2px solid $accent;
+}
+
 /* ---- media bin ---- */
 
 QListWidget {
