@@ -149,6 +149,15 @@ class TimelineScene(QGraphicsScene):
     def frame_rate(self) -> FrameRate:
         return self._project.frame_rate if self._project else FrameRate(30, 1)
 
+    def snap_ticks_to_frame(self, ticks: int) -> int:
+        """Put a tick value on the project's frame grid.
+
+        Here rather than in the interaction code because it is the same
+        quantisation :meth:`x_to_ticks` applies, and the two must never be able
+        to disagree about where a frame boundary is.
+        """
+        return snap_to_frame(int(ticks), self.frame_rate())
+
     # -- content ----------------------------------------------------------
 
     def project(self) -> Project | None:
@@ -172,6 +181,21 @@ class TimelineScene(QGraphicsScene):
 
     def clip_item(self, clip_id: str) -> ClipItem | None:
         return self._clip_items.get(clip_id)
+
+    def clip_item_at(self, x: float, y: float) -> ClipItem | None:
+        """The clip under a scene position, or None."""
+        for item in self._clip_items.values():
+            if item.sceneBoundingRect().contains(x, y):
+                return item
+        return None
+
+    def selected_clip_ids(self) -> list[str]:
+        return [item.clip_id for item in self._clip_items.values() if item.isSelected()]
+
+    def set_selected_clip_ids(self, clip_ids) -> None:
+        wanted = set(clip_ids)
+        for item in self._clip_items.values():
+            item.setSelected(item.clip_id in wanted)
 
     def clip_items(self) -> list[ClipItem]:
         return list(self._clip_items.values())
@@ -219,6 +243,13 @@ class TimelineScene(QGraphicsScene):
         """
         self._project = project
 
+        # A rebuild destroys every item, and with them the selection. It is
+        # carried across by id, because an edit is expected to leave the clip
+        # it acted on still selected: split then duplicate is one thought, not
+        # two, and a selection that vanished after every command would make it
+        # two.
+        selected = self.selected_clip_ids()
+
         for item in self._clip_items.values():
             self.removeItem(item)
         self._clip_items.clear()
@@ -244,6 +275,7 @@ class TimelineScene(QGraphicsScene):
                     self.addItem(item)
                     self._clip_items[clip.id] = item
 
+        self.set_selected_clip_ids(selected)
         self.relayout()
         self.layout_changed.emit()
 

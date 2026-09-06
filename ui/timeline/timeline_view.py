@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, Qt, Signal
 from PySide6.QtGui import QPainter, QWheelEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -28,6 +28,11 @@ from PySide6.QtWidgets import (
 from core.model import Project
 from core.timebase import ticks_to_seconds
 from ui import theme
+from ui.timeline.interaction import (
+    MEDIA_MIME,
+    TimelineInteraction,
+    decode_media_payload,
+)
 from ui.timeline.timeline_scene import (
     MAX_PIXELS_PER_SECOND,
     MIN_PIXELS_PER_SECOND,
@@ -40,6 +45,9 @@ __all__ = [
     "TrackHeaderColumn",
     "FitOutcome",
     "HEADER_WIDTH",
+    "ADD_VIDEO_LABEL",
+    "VIDEO_LIMIT_LABEL",
+    "MULTIPLE_VIDEO_TRACK_TOOLTIP",
 ]
 
 
@@ -59,8 +67,14 @@ _ZOOM_STEP = 1.25
 _FIT_MARGIN = 16
 
 MULTIPLE_VIDEO_TRACK_TOOLTIP = (
-    "Multiple video tracks require compositing, not supported in this version."
+    "Multiple video tracks require compositing, which this version does not support."
 )
+
+#: The add-video button carries the reason in its own label once the limit is
+#: reached. A button that is simply greyed out reads as broken: the constraint
+#: is deliberate, so it has to be legible without hovering for a tooltip.
+ADD_VIDEO_LABEL = "+ Video"
+VIDEO_LIMIT_LABEL = "1 video track max"
 
 
 class TimelineView(QGraphicsView):
@@ -75,6 +89,10 @@ class TimelineView(QGraphicsView):
     def __init__(self, scene: TimelineScene, parent: QWidget | None = None) -> None:
         super().__init__(scene, parent)
         self._scene = scene
+        # Every gesture on the timeline goes through this. The view's job is
+        # to convert widget coordinates to scene coordinates and forward; it
+        # holds no gesture state of its own.
+        self.interaction = TimelineInteraction(scene, self)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -84,6 +102,88 @@ class TimelineView(QGraphicsView):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Needed for the trim-handle cursor, which has to change on a plain
+        # hover with no button held.
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.setAcceptDrops(True)
+
+    # -- mouse ------------------------------------------------------------
+
+    def _scene_pos(self, event) -> QPointF:
+        return self.mapToScene(event.position().toPoint())
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        if self.interaction.press(self._scene_pos(event), event.modifiers()):
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        pos = self._scene_pos(event)
+        if self.interaction.is_dragging():
+            self.interaction.drag(pos, event.modifiers())
+            event.accept()
+            return
+        self.viewport().setCursor(self.interaction.cursor_for(pos))
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.interaction.is_dragging():
+            self.interaction.release(self._scene_pos(event), event.modifiers())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    # -- drops from the media bin ------------------------------------------
+
+    @staticmethod
+    def _media_payload(mime) -> dict | None:
+        if not mime.hasFormat(MEDIA_MIME):
+            return None
+        return decode_media_payload(mime.data(MEDIA_MIME).data())
+
+    def dragEnterEvent(self, event) -> None:
+        payload = self._media_payload(event.mimeData())
+        if payload is None:
+            event.ignore()
+            return
+        self.interaction.begin_media_drag(payload)
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if self._media_payload(event.mimeData()) is None:
+            event.ignore()
+            return
+        ok = self.interaction.update_media_drag(
+            self._scene_pos(event), event.modifiers()
+        )
+        if ok:
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.acceptProposedAction()
+        else:
+            # Refused, but the red ghost stays up: the pointer keeps its
+            # forbidden shape and the user can see exactly why.
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        self.interaction.end_media_drag()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if self._media_payload(event.mimeData()) is None:
+            event.ignore()
+            return
+        self.interaction.update_media_drag(self._scene_pos(event), event.modifiers())
+        if self.interaction.drop_media():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     # -- geometry ---------------------------------------------------------
 
@@ -184,6 +284,10 @@ class TimelineView(QGraphicsView):
             self.fit_project()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Escape and self.interaction.is_dragging():
+            self.interaction.cancel()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
 
@@ -193,7 +297,13 @@ class TrackHeaderColumn(QWidget):
     Add-track buttons live at the bottom. The video one is disabled whenever a
     video track already exists: v1 has no compositing, core.filtergraph refuses
     a second video track carrying clips, and the refusal has to be visible here
-    rather than discovered at export.
+    rather than discovered at export. It says so in its label rather than only
+    in a tooltip, so the greyed-out state reads as a stated limit and not as a
+    dead control.
+
+    The button is never removed. RemoveTrack can take the last video track
+    away, and a project with none cannot export, so re-adding one has to stay
+    reachable.
     """
 
     mute_toggled = Signal(str, bool)
@@ -213,7 +323,7 @@ class TrackHeaderColumn(QWidget):
         self._lane_host = QWidget(self)
         self._lane_host.setGeometry(0, 0, HEADER_WIDTH, 1)
 
-        self.add_video_button = QPushButton("+ Video", self)
+        self.add_video_button = QPushButton(ADD_VIDEO_LABEL, self)
         self.add_audio_button = QPushButton("+ Audio", self)
         self.add_video_button.clicked.connect(
             lambda: self.add_track_requested.emit("video")
@@ -268,9 +378,18 @@ class TrackHeaderColumn(QWidget):
         self.relayout()
 
     def refresh_add_buttons(self) -> None:
+        """Put the add-track buttons in step with the project.
+
+        Reached from rebuild(), which the scene's layout_changed drives, so
+        every command that adds or removes a track brings this with it,
+        including an undo or a redo of one.
+        """
         project: Project | None = self._scene.project()
         has_video = bool(project and project.video_tracks())
         self.add_video_button.setEnabled(not has_video)
+        self.add_video_button.setText(
+            VIDEO_LIMIT_LABEL if has_video else ADD_VIDEO_LABEL
+        )
         self.add_video_button.setToolTip(
             MULTIPLE_VIDEO_TRACK_TOOLTIP if has_video else "Add a video track"
         )
@@ -312,6 +431,18 @@ class TimelinePanel(QWidget):
     mute_toggled = Signal(str, bool)
     add_track_requested = Signal(str)
     fitted = Signal(str, float, float)
+    #: A finished gesture, carrying a core.commands.Command to push.
+    command_requested = Signal(object)
+    #: A scrub gesture began on the ruler.
+    scrub_started = Signal()
+    #: The playhead was moved by clicking or dragging the ruler.
+    playhead_scrubbed = Signal("qint64")
+    #: The scrub gesture ended, at this tick.
+    scrub_finished = Signal("qint64")
+    #: Clip selection changed.
+    selection_changed = Signal()
+    #: A gesture was refused. Carries a sentence for the status bar.
+    rejected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -319,6 +450,14 @@ class TimelinePanel(QWidget):
         self.view = TimelineView(self.scene, self)
         self.headers = TrackHeaderColumn(self.scene, self)
         self.view.fitted.connect(self.fitted)
+
+        self.interaction = self.view.interaction
+        self.interaction.command_requested.connect(self.command_requested)
+        self.interaction.scrub_started.connect(self.scrub_started)
+        self.interaction.playhead_scrubbed.connect(self.playhead_scrubbed)
+        self.interaction.scrub_finished.connect(self.scrub_finished)
+        self.interaction.selection_changed.connect(self.selection_changed)
+        self.interaction.rejected.connect(self.rejected)
 
         self.headers.mute_toggled.connect(self.mute_toggled)
         self.headers.add_track_requested.connect(self.add_track_requested)
@@ -356,6 +495,21 @@ class TimelinePanel(QWidget):
 
     def set_playhead(self, ticks: int) -> None:
         self.scene.set_playhead(ticks)
+
+    def playhead_ticks(self) -> int:
+        return self.scene.playhead_ticks()
+
+    def selected_clip_ids(self) -> list[str]:
+        return self.scene.selected_clip_ids()
+
+    def set_media_duration_lookup(self, lookup) -> None:
+        """Tell the trim handles how long each source file is.
+
+        Only the window knows: it holds the probe results. Where it has no
+        answer the right-hand trim is simply unbounded, see
+        :func:`ui.timeline.interaction.clamp_trim_right`.
+        """
+        self.interaction.media_duration = lookup
 
     def zoom_range(self) -> tuple[float, float]:
         return MIN_PIXELS_PER_SECOND, MAX_PIXELS_PER_SECOND

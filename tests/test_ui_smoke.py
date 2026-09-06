@@ -27,9 +27,18 @@ from core.timebase import FrameRate  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.dialogs import split_error  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
+from ui.playback_controller import PlaybackController  # noqa: E402
 from ui.preview_panel import PreviewController, PreviewPanel  # noqa: E402
-from ui.single_player_controller import SinglePlayerController  # noqa: E402
 from ui.video_stage import VideoStage  # noqa: E402
+
+
+def timeline_controller(widget: PreviewPanel) -> PlaybackController:
+    """The real Phase 5 controller, with a bed player that never gets a bed.
+
+    A stub would let the panel drift away from the PreviewController protocol
+    without anything noticing, which is the whole point of the seam.
+    """
+    return PlaybackController(None, widget.stage, QMediaPlayer())
 
 
 @pytest.fixture(scope="session")
@@ -42,7 +51,7 @@ def qapp() -> QApplication:
 @pytest.fixture
 def panel(qapp: QApplication) -> PreviewPanel:
     widget = PreviewPanel()
-    widget.set_controller(SinglePlayerController(widget.stage))
+    widget.set_controller(timeline_controller(widget))
     yield widget
     widget.deleteLater()
 
@@ -160,7 +169,7 @@ class TestSteppingDoesNotAccumulate:
         from core.timebase import frames_to_ticks
 
         widget = PreviewPanel()
-        widget.set_controller(SinglePlayerController(widget.stage))
+        widget.set_controller(timeline_controller(widget))
         widget.set_project(Project(name="vfr", frame_rate=self.VFR))
         widget.report_duration(frames_to_ticks(100_000, self.VFR))
         yield widget
@@ -215,7 +224,7 @@ class TestSteppingDoesNotAccumulate:
         self, qapp: QApplication
     ) -> None:
         widget = PreviewPanel()
-        widget.set_controller(SinglePlayerController(widget.stage))
+        widget.set_controller(timeline_controller(widget))
         widget.set_project(Project(name="p", frame_rate=FrameRate(30000, 1001)))
         widget.report_duration(600 * SEC)
         widget.seek(0)
@@ -261,13 +270,18 @@ class TestPreviewPanel:
         assert panel._play_pause.isEnabled() is True
 
     def test_the_controller_satisfies_the_protocol(self, panel: PreviewPanel) -> None:
-        # Phase 5 swaps this out. The protocol is the contract it has to meet.
+        # Phase 5 swapped this out and the protocol is what made that a
+        # replacement rather than a rewrite. It stays the contract.
         assert isinstance(panel.controller(), PreviewController)
 
-    def test_status_line_starts_empty(self, panel: PreviewPanel) -> None:
-        assert panel._status.text() == ""
-        panel.set_status("Rendering audio bed")
-        assert panel._status.text() == "Rendering audio bed"
+    def test_the_status_line_is_the_controllers_to_write(
+        self, panel: PreviewPanel
+    ) -> None:
+        # A controller with no bed says so as soon as it attaches, which is
+        # the honest answer for a project with no audio.
+        assert panel._status.text() == "No audio in project"
+        panel.set_status("Rendering audio preview")
+        assert panel._status.text() == "Rendering audio preview"
 
 
 class TestErrorSurface:
@@ -368,11 +382,14 @@ class TestMainWindow:
             return original(self, url)
 
         monkeypatch.setattr(QMediaPlayer, "setSource", counted)
-        window.player.load(Path("nonexistent.mp4"))
+        window.preview.stage.load_active(Path("nonexistent.mp4"))
         assert len(calls) == 1
 
-    def test_the_preview_declares_itself_silent(self, window: MainWindow) -> None:
-        assert window.preview._volume.isEnabled() is False
+    def test_the_volume_slider_is_live(self, window: MainWindow) -> None:
+        # Disabled from Phase 2 until Phase 5 gave it a real audio path: the
+        # bed player's QAudioOutput.
+        assert window.preview._volume.isEnabled() is True
+        assert window.preview._volume.toolTip() == "Volume"
 
     def test_the_timeline_renders_the_project(self, window: MainWindow) -> None:
         assert [lane.kind for lane in window.timeline.scene.lanes()] == [

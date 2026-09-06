@@ -20,9 +20,10 @@ from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem
 
 from ui import theme
 
-__all__ = ["ClipItem", "CORNER_RADIUS"]
+__all__ = ["ClipItem", "CORNER_RADIUS", "SELECTED_BORDER_WIDTH"]
 
 CORNER_RADIUS = 3
+SELECTED_BORDER_WIDTH = 2
 _LABEL_MARGIN = 4
 _MEDIA_TOP_INSET = 16
 _THUMBNAIL_MIN_WIDTH = 24
@@ -56,6 +57,11 @@ class ClipItem(QGraphicsRectItem):
             theme.CLIP_VIDEO if kind == "video" else theme.CLIP_AUDIO
         )
         self._muted = False
+        # Selectable so isSelected() drives the accent border, but deaf to the
+        # mouse: every gesture on the timeline is routed through
+        # ui.timeline.interaction, which needs to see the press before any item
+        # can swallow it.
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setToolTip(f"{label}\n{src}")
 
@@ -134,10 +140,15 @@ class ClipItem(QGraphicsRectItem):
             self._paint_waveform(painter, rect)
         painter.restore()
 
-        border = QColor(theme.ACCENT) if self.isSelected() else QColor(0, 0, 0, 90)
-        painter.setPen(QPen(border, 1))
+        selected = self.isSelected()
+        border = QColor(theme.ACCENT) if selected else QColor(0, 0, 0, 90)
+        width = SELECTED_BORDER_WIDTH if selected else 1
+        painter.setPen(QPen(border, width))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), CORNER_RADIUS, CORNER_RADIUS)
+        inset = width / 2
+        painter.drawRoundedRect(
+            rect.adjusted(inset, inset, -inset, -inset), CORNER_RADIUS, CORNER_RADIUS
+        )
 
         self._paint_label(painter, rect)
 

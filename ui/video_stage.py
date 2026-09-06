@@ -154,15 +154,26 @@ class VideoStage(QWidget):
         player.pause()
 
     def load_active(self, path: Path | str, position_ms: int = 0) -> None:
-        """Load straight into the active player and show it.
+        """Load straight into the active player, seek it, and show it.
 
-        The single-file preview in this phase has nothing to double buffer.
-        Phase 5 uses preload/present_standby instead.
+        This is the slow path at a cut: the clip that was needed had not been
+        preloaded, which happens after a seek or a scrub.
         """
         slot = self._active
         player = self._players[slot]
         self._pending_ms[slot] = max(0, int(position_ms))
-        player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
+
+        url = QUrl.fromLocalFile(str(Path(path).resolve()))
+        if player.source() == url:
+            # The same guard preload() carries, and for the same reason: Qt
+            # does not re-emit LoadedMedia for a source that is already open,
+            # so the pending seek would wait for a status that never arrives
+            # and the player would stay on whatever frame it was showing.
+            # Scrubbing backwards across a split hits this every time, because
+            # every clip of a split is the same file.
+            self._seek_pending(slot)
+        else:
+            player.setSource(url)
         self._stack.setCurrentWidget(self._widgets[slot])
 
     def stop_all(self) -> None:

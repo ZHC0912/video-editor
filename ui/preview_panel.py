@@ -2,8 +2,12 @@
 
 The panel owns widgets and knows nothing about how playback works. A
 controller supplies that, and the panel talks to it through
-:class:`PreviewController`. Phase 5 swaps SinglePlayerController for a timeline
-controller and this file does not change.
+:class:`PreviewController`. That seam held through Phase 5: the whole
+controller was replaced with
+:class:`~ui.playback_controller.PlaybackController` and nothing here had to
+change to accommodate it. It has since been widened once, deliberately, for
+scrubbing: a scrub is a three phase gesture and seek() alone could not say
+where one begins and ends.
 
 Direction of traffic:
     user gesture      -> panel calls the controller
@@ -47,7 +51,41 @@ class PreviewController(Protocol):
     def set_project(self, project: Project | None) -> None: ...
     def position_ticks(self) -> int: ...
     def duration_ticks(self) -> int: ...
-    def seek(self, ticks: int) -> None: ...
+    def seek(self, ticks: int) -> None:
+        """Move the playhead to ``ticks`` and put that frame on the stage.
+
+        A one shot move: a frame step, Home, End, a click on the timeline.
+        Moves the audio player to match, and does NOT change whether playback
+        is running.
+        """
+        ...
+
+    def begin_scrub(self) -> None:
+        """The user grabbed the playhead, by the ruler or by the scrubber.
+
+        Stop playback if it was running, and leave the audio player paused for
+        the rest of the gesture. There is no scrub audio in this version.
+        """
+        ...
+
+    def scrub_to(self, ticks: int) -> None:
+        """A position mid drag. The stage follows; the audio player does not.
+
+        Do not move the audio player here. A drag is tens of these, and
+        seeking a media player per mouse move is both wasteful and audible.
+        end_scrub aligns it, once.
+        """
+        ...
+
+    def end_scrub(self, ticks: int) -> None:
+        """The drag ended at ``ticks``.
+
+        This is where the audio player is moved, exactly once, so that a
+        subsequent play() resumes from the right place in sync. Playback stays
+        stopped: nothing auto resumes, the user presses Space.
+        """
+        ...
+
     def play(self) -> None: ...
     def pause(self) -> None: ...
     def is_playing(self) -> bool: ...
@@ -133,7 +171,9 @@ class PreviewPanel(QWidget):
         self._volume.setToolTip("Volume")
         self._volume.valueChanged.connect(self._on_volume_changed)
 
-        # Empty for now. Phase 5 reports bed rendering and clock state here.
+        # The controller owns this text: "" when the bed is driving
+        # playback, "Rendering audio preview" while one is being built,
+        # "No audio in project" when there is nothing to mix.
         self._status = QLabel("", self)
         self._status.setProperty("muted", True)
 
@@ -210,11 +250,14 @@ class PreviewPanel(QWidget):
         return self._duration
 
     def seek(self, ticks: int) -> None:
-        ticks = max(0, min(int(ticks), self._duration or int(ticks)))
+        ticks = self._clamp(ticks)
         if self._controller is not None:
             self._controller.seek(ticks)
         else:
             self.report_position(ticks)
+
+    def _clamp(self, ticks: int) -> int:
+        return max(0, min(int(ticks), self._duration or int(ticks)))
 
     def play(self) -> None:
         if self._controller is not None:
@@ -302,8 +345,9 @@ class PreviewPanel(QWidget):
     def set_audio_available(self, available: bool) -> None:
         """Whether the current controller can actually make sound.
 
-        Phase 2's controller cannot, so the volume slider is disabled rather
-        than left live and inert. Phase 5's bed player calls this with True.
+        The slider is a monitoring level for whatever the controller is
+        playing. It never reaches the model: clip gain and track mutes are
+        baked into the audio bed by FFmpeg long before a player sees it.
         """
         self._volume.setEnabled(available)
         self._volume.setToolTip(
@@ -332,14 +376,31 @@ class PreviewPanel(QWidget):
         return round(value * self._duration / _SCRUB_STEPS)
 
     def _on_scrub_pressed(self) -> None:
+        """The scrubber and the timeline ruler are one gesture through two
+        widgets, so they take the same three phase route. Anything else is an
+        inconsistency a user feels without being able to name it."""
         self._scrubbing = True
+        if self._controller is not None:
+            self._controller.begin_scrub()
 
     def _on_scrub_moved(self, value: int) -> None:
-        self.seek(self._scrub_to_ticks(value))
+        self._scrub(self._scrub_to_ticks(value), final=False)
 
     def _on_scrub_released(self) -> None:
+        # sliderReleased carries no value, so read the one the slider settled
+        # on. A release with no preceding move is a click on the groove, and
+        # this is then the whole gesture.
         self._scrubbing = False
-        self.seek(self._scrub_to_ticks(self._scrubber.value()))
+        self._scrub(self._scrub_to_ticks(self._scrubber.value()), final=True)
+
+    def _scrub(self, ticks: int, final: bool) -> None:
+        ticks = self._clamp(ticks)
+        if self._controller is None:
+            self.report_position(ticks)
+        elif final:
+            self._controller.end_scrub(ticks)
+        else:
+            self._controller.scrub_to(ticks)
 
     def _on_volume_changed(self, value: int) -> None:
         if self._controller is not None:

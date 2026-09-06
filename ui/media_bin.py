@@ -10,9 +10,17 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, Qt
-from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent
-from PySide6.QtWidgets import QListWidget, QWidget
+from PySide6.QtCore import QByteArray, QMimeData, Qt
+from PySide6.QtGui import (
+    QDrag,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+)
+from PySide6.QtWidgets import QListWidget, QListWidgetItem, QWidget
+
+from ui.timeline.interaction import MEDIA_MIME
 
 __all__ = ["MediaBinList", "dropped_paths", "has_droppable_files", "set_drop_highlight"]
 
@@ -58,13 +66,46 @@ class MediaBinList(QListWidget):
         self,
         on_drop: Callable[[Iterable[Path]], None],
         parent: QWidget | None = None,
+        payload_for: Callable[[QListWidgetItem], bytes | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._on_drop = on_drop
+        self._payload_for = payload_for
         self.setAcceptDrops(True)
-        # Files come from outside the application. Nothing is dragged out of
-        # the bin yet; Phase 4 adds dragging clips to the timeline.
-        self.setDragDropMode(QListWidget.DragDropMode.DropOnly)
+        # Files come in from outside, and rows go out to the timeline. The two
+        # directions carry different formats and never collide: an incoming
+        # drop is recognised by its URLs, an outgoing one by MEDIA_MIME, and
+        # neither carries the other's.
+        self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
+        self.setDragEnabled(True)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+
+    # -- dragging a row out to the timeline -------------------------------
+
+    def startDrag(self, supported_actions: Qt.DropAction) -> None:
+        """Publish the row under the pointer as a droppable media reference.
+
+        The drag carries the probe result, not just a path, so the timeline can
+        size and validate its ghost without reaching back into the window. One
+        row per drag: a bin selection can hold several, but a drop lands at one
+        position on one track and there is no sensible answer for the rest.
+        """
+        item = self.currentItem()
+        if item is None or self._payload_for is None:
+            return
+        raw = self._payload_for(item)
+        if raw is None:
+            # Still being probed, or unreadable. Nothing to place yet.
+            return
+
+        mime = QMimeData()
+        mime.setData(MEDIA_MIME, QByteArray(raw))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        sizes = item.icon().availableSizes()
+        if sizes:
+            drag.setPixmap(item.icon().pixmap(sizes[0]))
+        drag.exec(Qt.DropAction.CopyAction)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if has_droppable_files(event.mimeData()):

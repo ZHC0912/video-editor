@@ -449,7 +449,7 @@ class TestClosePrompt:
         # And nothing was torn down: cancelling must leave a working window,
         # which is why the prompt comes before the teardown.
         assert w.audio_bed._pool is not None
-        assert w.player is not None
+        assert w.playback is not None
         w._dirty = False
         w.close()
 

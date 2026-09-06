@@ -24,7 +24,9 @@ from ui.timeline.timeline_scene import (  # noqa: E402
 )
 from ui.timeline.timeline_view import (  # noqa: E402
     HEADER_WIDTH,
+    ADD_VIDEO_LABEL,
     MULTIPLE_VIDEO_TRACK_TOOLTIP,
+    VIDEO_LIMIT_LABEL,
     FitOutcome,
     TimelinePanel,
 )
@@ -376,6 +378,11 @@ class TestAddTrackAffordance:
     ) -> None:
         assert panel.headers.add_video_button.isEnabled() is False
 
+    def test_the_label_states_the_limit(self, panel: TimelinePanel) -> None:
+        """A greyed-out "+ Video" reads as a broken button, so the label
+        carries the reason and the tooltip carries the explanation."""
+        assert panel.headers.add_video_button.text() == VIDEO_LIMIT_LABEL
+
     def test_the_tooltip_says_why(self, panel: TimelinePanel) -> None:
         assert panel.headers.add_video_button.toolTip() == MULTIPLE_VIDEO_TRACK_TOOLTIP
 
@@ -385,6 +392,7 @@ class TestAddTrackAffordance:
         p = TimelinePanel()
         p.set_project(make_project(video=0, audio=2))
         assert p.headers.add_video_button.isEnabled() is True
+        assert p.headers.add_video_button.text() == ADD_VIDEO_LABEL
         assert "compositing" not in p.headers.add_video_button.toolTip()
 
     def test_audio_tracks_are_unlimited(self, qapp: QApplication) -> None:
