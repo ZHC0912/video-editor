@@ -14,7 +14,17 @@ import pytest
 
 from core.model import Clip, Project, Track
 from core.probe import probe
-from core.render import NoAudioError, RenderError, render, render_audio_bed
+from core.encoders import NVENC_H264, SOFTWARE_H264
+from core.render import (
+    QUALITY_PRESETS,
+    RESOLUTION_PRESETS,
+    NoAudioError,
+    RenderError,
+    preset_size,
+    render,
+    render_audio_bed,
+    video_encoder_args,
+)
 from core.render import _iter_lines, _parse_time
 from core.timebase import TICKS_PER_SECOND as SEC
 from core.timebase import FrameRate, ticks_to_seconds
@@ -442,3 +452,67 @@ class TestAudioBedIntegration:
         with pytest.raises(NoAudioError):
             render_audio_bed(p, tmp_path / "bed.wav", threading.Event())
         assert not (tmp_path / "bed.wav").exists()
+
+
+class TestExportOptions:
+    """Resolution presets and encoder arguments. Pure string and arithmetic."""
+
+    @staticmethod
+    def project(width: int, height: int) -> Project:
+        return Project(name="p", width=width, height=height)
+
+    def test_source_is_the_absence_of_a_choice(self) -> None:
+        assert preset_size(self.project(1920, 1080), "Source") is None
+
+    def test_an_unknown_preset_changes_nothing(self) -> None:
+        assert preset_size(self.project(1920, 1080), "4K") is None
+
+    def test_a_preset_that_matches_the_project_inserts_no_scaler(self) -> None:
+        # Scaling by one is a wasted filter and a rounding opportunity.
+        assert preset_size(self.project(1920, 1080), "1080p") is None
+
+    def test_720p_from_a_1080p_project(self) -> None:
+        assert preset_size(self.project(1920, 1080), "720p") == (1280, 720)
+
+    def test_480p_from_a_1080p_project(self) -> None:
+        assert preset_size(self.project(1920, 1080), "480p") == (854, 480)
+
+    def test_width_follows_the_projects_own_shape(self) -> None:
+        # A vertical project exports vertical, not letterboxed into 16:9.
+        # 405 exactly, which is a tie between two even numbers; either is
+        # right and the rounding rule picks the lower.
+        assert preset_size(self.project(1080, 1920), "720p") == (404, 720)
+
+    def test_a_four_by_three_project_keeps_its_shape(self) -> None:
+        assert preset_size(self.project(640, 480), "720p") == (960, 720)
+
+    def test_every_dimension_is_even(self) -> None:
+        # H.264 chroma subsampling requires it; an odd width is a hard failure
+        # from the encoder rather than a rounded picture.
+        for width, height in ((1920, 1080), (1080, 1920), (1440, 1080), (1366, 768)):
+            for preset in RESOLUTION_PRESETS:
+                size = preset_size(self.project(width, height), preset)
+                if size is not None:
+                    assert size[0] % 2 == 0 and size[1] % 2 == 0, (width, height, preset)
+
+    def test_the_quality_presets_are_the_ones_phase_six_names(self) -> None:
+        assert QUALITY_PRESETS == {"High": 18, "Medium": 20, "Small": 24}
+
+    def test_the_software_encoder_uses_crf(self) -> None:
+        args = video_encoder_args(SOFTWARE_H264, 20)
+        assert args == ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+
+    def test_the_hardware_encoder_uses_constant_quality_not_crf(self) -> None:
+        args = video_encoder_args(NVENC_H264, 20)
+        assert "-crf" not in args, "NVENC has no CRF; -cq is its equivalent"
+        assert args[:2] == ["-c:v", "h264_nvenc"]
+        assert "-cq" in args and args[args.index("-cq") + 1] == "20"
+
+    def test_the_hardware_encoder_is_told_not_to_target_a_bitrate(self) -> None:
+        # Without this NVENC applies a default bitrate cap and the quality
+        # setting silently does nothing.
+        args = video_encoder_args(NVENC_H264, 18)
+        assert args[args.index("-b:v") + 1] == "0"
+
+    def test_an_unknown_encoder_falls_back_to_software(self) -> None:
+        assert video_encoder_args("h264_qsv", 20)[1] == SOFTWARE_H264

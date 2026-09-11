@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from core.binaries import resolve_binary
+from core.encoders import NVENC_H264, SOFTWARE_H264
 from core.filtergraph import (
     NoAudioError,
     RenderError,
@@ -29,9 +30,85 @@ from core.filtergraph import (
 from core.model import Project
 from core.timebase import ticks_to_seconds
 
-__all__ = ["RenderError", "NoAudioError", "render", "render_audio_bed"]
+__all__ = [
+    "RenderError",
+    "NoAudioError",
+    "render",
+    "render_audio_bed",
+    "RESOLUTION_PRESETS",
+    "QUALITY_PRESETS",
+    "preset_size",
+    "video_encoder_args",
+]
 
 ProgressFn = Callable[[float, float], None]
+
+#: Export sizes offered in the dialog, by the height they name. "Source" is
+#: the project's own size and is not in here: it is the absence of a choice.
+RESOLUTION_PRESETS: dict[str, int] = {
+    "1080p": 1080,
+    "720p": 720,
+    "480p": 480,
+}
+
+#: Quality names and the CRF they mean. Lower is better and bigger.
+QUALITY_PRESETS: dict[str, int] = {
+    "High": 18,
+    "Medium": 20,
+    "Small": 24,
+}
+
+
+def preset_size(project: Project, preset: str) -> tuple[int, int] | None:
+    """The output size for a resolution preset, or None to leave it alone.
+
+    Width follows from the project's aspect ratio rather than from a table of
+    standard widths, so a 4:3 or vertical project exports at its own shape. It
+    is rounded to an even number because H.264 chroma subsampling requires it.
+
+    None comes back for "Source", and also for a preset that works out to the
+    size the project already is: inserting a scaler to scale by one is a waste
+    of a filter and a rounding opportunity.
+    """
+    height = RESOLUTION_PRESETS.get(preset)
+    if height is None or project.height <= 0:
+        return None
+    # To the NEAREST even number, not down to it. 16:9 at 480 high is 853.33
+    # wide, and the standard answer is 854: flooring to even would give 852,
+    # which is a slightly wrong aspect ratio for no reason.
+    exact = project.width * height / project.height
+    width = max(2, 2 * round(exact / 2))
+    height -= height % 2
+    if (width, height) == (project.width, project.height):
+        return None
+    return width, height
+
+
+def video_encoder_args(encoder: str, crf: int) -> list[str]:
+    """Codec and rate-control arguments for one encoder at one quality.
+
+    The two encoders do not share a quality scale. libx264's CRF and NVENC's
+    CQ are both 0..51 and both mean "constant quality", but the same number
+    does not produce the same picture: NVENC at a given number is bigger, or
+    softer, or both. The number is passed through unchanged anyway, because
+    inventing a translation table would be pretending to a precision that
+    does not exist. The dialog says the quality per bitrate is lower.
+    """
+    if encoder == NVENC_H264:
+        return [
+            "-c:v", NVENC_H264,
+            # p5 is NVENC's "medium": the same place on its speed/quality
+            # curve that -preset medium is on x264's.
+            "-preset", "p5",
+            "-tune", "hq",
+            "-rc", "vbr",
+            "-cq", str(crf),
+            # 0 means "no target bitrate, obey -cq". Without it NVENC applies
+            # a default bitrate cap and the quality setting does nothing.
+            "-b:v", "0",
+        ]
+    return ["-c:v", SOFTWARE_H264, "-preset", "medium", "-crf", str(crf)]
+
 
 # Keep the console window from flashing on Windows.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -152,12 +229,20 @@ def render(
     cancel: threading.Event,
     crf: int = 20,
     on_progress: ProgressFn | None = None,
+    encoder: str = SOFTWARE_H264,
+    out_size: tuple[int, int] | None = None,
 ) -> None:
     """Export the project to an H.264 / AAC MP4 at ``out_path``.
 
     Always re-encodes. Returns normally and deletes the partial file if
     ``cancel`` is set while running; raises :class:`RenderError` if FFmpeg
     fails.
+
+    ``encoder`` is ``libx264`` or ``h264_nvenc``; see
+    :func:`video_encoder_args`. ``out_size`` scales the finished video on the
+    way out, which is a resolution preset; the filter graph always composes at
+    the project's own size, so this is one scaler at the end rather than a
+    different graph.
     """
     if not 0 <= crf <= 51:
         raise RenderError(f"crf must be between 0 and 51, got {crf}")
@@ -175,15 +260,12 @@ def render(
         "-filter_complex",
         filter_complex,
         *maps,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        str(crf),
+        *video_encoder_args(encoder, crf),
         "-pix_fmt",
         "yuv420p",
     ]
+    if out_size is not None:
+        cmd += ["-s", f"{out_size[0]}x{out_size[1]}"]
     if "[aout]" in maps:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
     cmd.append(str(out_path))

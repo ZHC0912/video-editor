@@ -20,10 +20,15 @@ from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem
 
 from ui import theme
 
-__all__ = ["ClipItem", "CORNER_RADIUS", "SELECTED_BORDER_WIDTH"]
+__all__ = ["ClipItem", "CORNER_RADIUS", "SELECTED_BORDER_WIDTH", "UNRESOLVED_ALPHA"]
 
 CORNER_RADIUS = 3
 SELECTED_BORDER_WIDTH = 2
+#: How strongly the red hatch is laid over a clip whose file is gone. Enough
+#: to be unmistakable across the room, not so much that the clip stops being
+#: legible: it is still a clip, it can still be moved, trimmed and deleted, and
+#: relinking it puts everything back.
+UNRESOLVED_ALPHA = 90
 _LABEL_MARGIN = 4
 _MEDIA_TOP_INSET = 16
 _THUMBNAIL_MIN_WIDTH = 24
@@ -57,6 +62,7 @@ class ClipItem(QGraphicsRectItem):
             theme.CLIP_VIDEO if kind == "video" else theme.CLIP_AUDIO
         )
         self._muted = False
+        self._unresolved = False
         # Selectable so isSelected() drives the accent border, but deaf to the
         # mouse: every gesture on the timeline is routed through
         # ui.timeline.interaction, which needs to see the press before any item
@@ -71,6 +77,26 @@ class ClipItem(QGraphicsRectItem):
         if muted != self._muted:
             self._muted = muted
             self.update()
+
+    def set_unresolved(self, unresolved: bool) -> None:
+        """Whether this clip's source file is missing.
+
+        The item does not go looking: the window knows what is on disk and
+        says so. A paint that stat'ed a file would stat it on every scroll.
+        """
+        if unresolved != self._unresolved:
+            self._unresolved = unresolved
+            plain = f"{self.label}\n{self.src}"
+            self.setToolTip(
+                f"{plain}\n\nFile not found. Relink it from the Edit menu; "
+                f"it is skipped on export."
+                if unresolved
+                else plain
+            )
+            self.update()
+
+    def is_unresolved(self) -> bool:
+        return self._unresolved
 
     def source_tick_at(self, fraction: float) -> int:
         """The source position a fraction of the way across the clip."""
@@ -87,6 +113,10 @@ class ClipItem(QGraphicsRectItem):
         """
         scene = self.scene()
         if scene is None:
+            return
+        # Nothing to decode: every job would spawn an ffmpeg that fails on a
+        # missing input, once per thumbnail cell, on every layout.
+        if self._unresolved:
             return
         width = self.rect().width()
         if width < 2:
@@ -138,11 +168,18 @@ class ClipItem(QGraphicsRectItem):
             self._paint_filmstrip(painter, rect)
         else:
             self._paint_waveform(painter, rect)
+        if self._unresolved:
+            self._paint_unresolved(painter, rect)
         painter.restore()
 
         selected = self.isSelected()
-        border = QColor(theme.ACCENT) if selected else QColor(0, 0, 0, 90)
-        width = SELECTED_BORDER_WIDTH if selected else 1
+        if selected:
+            border = QColor(theme.ACCENT)
+        elif self._unresolved:
+            border = QColor(theme.ERROR)
+        else:
+            border = QColor(0, 0, 0, 90)
+        width = SELECTED_BORDER_WIDTH if (selected or self._unresolved) else 1
         painter.setPen(QPen(border, width))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         inset = width / 2
@@ -178,6 +215,18 @@ class ClipItem(QGraphicsRectItem):
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
             text,
         )
+
+    def _paint_unresolved(self, painter: QPainter, rect: QRectF) -> None:
+        """Red diagonal hatching, over whatever the clip would have shown.
+
+        Drawn inside the clip's clip rect, so the pattern stops at the clip
+        rather than running across the lane. BDiagPattern is a Qt brush, so
+        the stripes are the same width at every zoom: this is a marker on the
+        interface, not something in the timeline that scales with it.
+        """
+        colour = QColor(theme.ERROR)
+        colour.setAlpha(UNRESOLVED_ALPHA)
+        painter.fillRect(rect, QBrush(colour, Qt.BrushStyle.BDiagPattern))
 
     def _paint_filmstrip(self, painter: QPainter, rect: QRectF) -> None:
         scene = self.scene()

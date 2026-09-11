@@ -1,10 +1,14 @@
 """The application shell.
 
-Menus, the media bin, the preview panel, a placeholder where the timeline goes
-in Phase 3, and the export job.
+Menus, the media bin, the preview panel, the timeline, and the export job.
 
 Nothing long running happens on the GUI thread. Probing is fast enough to be
-synchronous; rendering is not, and runs on a QThread.
+synchronous; rendering is not, and runs on a QThread. The encoder capability
+probe and the relink folder search are on pool threads for the same reason.
+
+The window owns the project lifecycle: what is open, whether it has unsaved
+changes, where it autosaves, and what is remembered between runs. The model
+itself is only ever changed through :meth:`MainWindow.run_command`.
 """
 
 from __future__ import annotations
@@ -14,10 +18,20 @@ import threading
 from collections.abc import Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRect, Qt, QThread, Signal, Slot
+from PySide6.QtCore import (
+    QElapsedTimer,
+    QObject,
+    QRect,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QAction, QGuiApplication, QIcon, QKeySequence
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QFrame,
     QLabel,
@@ -38,15 +52,27 @@ from core.commands import (
     DeleteClip,
     DuplicateClip,
     MacroCommand,
+    RelinkMedia,
     SetTrackMuted,
     SplitClip,
 )
+from core.encoders import SOFTWARE_H264
 from core.filtergraph import RenderError, build_full
+from core.media_check import (
+    MissingSource,
+    missing_clip_ids,
+    missing_sources,
+    relink_map,
+    without_missing_clips,
+)
 from core.model import MediaInfo, Project, Track
 from core.project_io import (
     PROJECT_EXTENSION,
     PROJECT_FORMAT_NAME,
     ProjectIOError,
+    autosave_is_newer,
+    autosave_path,
+    discard_autosave,
     is_project_path,
     load,
     save,
@@ -60,17 +86,24 @@ from core.timebase import (
     ticks_to_frames,
 )
 from ui import format_utils, poster, theme, window_geometry
-from ui.dialogs import show_error, split_error
+from ui.dialogs import confirm, show_error, split_error
+from ui.export_dialog import ExportDialog, ExportRequest
 from ui.media_bin import MediaBinList, has_droppable_files, dropped_paths, set_drop_highlight
 from ui.playback_controller import PlaybackController
 from ui.preview_panel import PreviewPanel
+from ui.relink_dialog import RelinkDialog
+from ui.settings import Settings
 from ui.timeline.interaction import media_payload
 from ui.timeline.timeline_view import FitOutcome, TimelinePanel
 from ui.workers.audio_bed_worker import AudioBedWorker
+from ui.workers.encoder_probe import EncoderProbe
 from ui.workers.probe_worker import ProbeQueue
 from ui.workers.thumbnail_worker import shared_thumbnail_cache
 
-__all__ = ["MainWindow"]
+__all__ = ["MainWindow", "AUTOSAVE_INTERVAL_MS"]
+
+#: Phase 6 says every 120 seconds while there are unsaved changes.
+AUTOSAVE_INTERVAL_MS = 120_000
 
 MEDIA_FILTER = (
     "Media files (*.mp4 *.mov *.mkv *.avi *.m4v *.webm *.wav *.mp3 *.aac *.flac);;"
@@ -98,12 +131,21 @@ class _RenderWorker(QObject):
     failed = Signal(str, str)
 
     def __init__(
-        self, project: Project, out_path: Path, cancel: threading.Event
+        self,
+        project: Project,
+        out_path: Path,
+        cancel: threading.Event,
+        crf: int = 20,
+        encoder: str = SOFTWARE_H264,
+        out_size: tuple[int, int] | None = None,
     ) -> None:
         super().__init__()
         self._project = project
         self._out_path = out_path
         self._cancel = cancel
+        self._crf = crf
+        self._encoder = encoder
+        self._out_size = out_size
 
     @Slot()
     def run(self) -> None:
@@ -112,7 +154,10 @@ class _RenderWorker(QObject):
                 self._project,
                 self._out_path,
                 self._cancel,
+                crf=self._crf,
                 on_progress=self.progress.emit,
+                encoder=self._encoder,
+                out_size=self._out_size,
             )
         except RenderError as exc:
             self.failed.emit(*split_error(exc))
@@ -124,10 +169,14 @@ class _RenderWorker(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
         super().__init__()
         self.setWindowTitle("VidEditor")
-        self.apply_geometry()
+
+        # Everything remembered between runs. Injectable so a test can point
+        # at a temporary file instead of the user's real settings.
+        self.settings = settings if settings is not None else Settings()
+        self.apply_geometry(self.settings.geometry())
 
         self._project: Project | None = None
         self._project_path: Path | None = None
@@ -137,11 +186,33 @@ class MainWindow(QMainWindow):
         # Bin contents, keyed by normalised path. Rows exist before their
         # probe returns, so a key may be present with no MediaInfo yet.
         self._media: dict[str, MediaInfo] = {}
+        # Source files the project refers to that are not on disk. Cached
+        # rather than recomputed on demand: it is read by every refresh of the
+        # edit actions, which happens on every click, and it costs a stat per
+        # distinct source file.
+        self._missing: list[MissingSource] = []
 
         self._render_thread: QThread | None = None
         self._render_worker: _RenderWorker | None = None
         self._render_cancel: threading.Event | None = None
         self._render_dialog: QProgressDialog | None = None
+        # Wall clock for the export, which is what "elapsed" and "remaining"
+        # on the progress line mean. The media time ffmpeg reports is the
+        # other axis.
+        self._render_clock = QElapsedTimer()
+
+        # Whether the GPU encoder is offerable. Answered on a pool thread,
+        # because finding out spawns ffmpeg twice; until it answers the
+        # export dialog offers software encoding only.
+        self.encoder_probe = EncoderProbe(self)
+
+        # Unsaved work is written beside the project file every two minutes.
+        # A single shot timer restarted on each edit would autosave two
+        # minutes after the LAST edit, which during a long editing session is
+        # never; this one just runs.
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(AUTOSAVE_INTERVAL_MS)
+        self._autosave_timer.timeout.connect(self.autosave_now)
 
         # The playhead is written from two directions: playback pushes it, and
         # dragging the ruler pulls it. An explicit flag, not blockSignals, so
@@ -161,6 +232,25 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menus()
         self.new_project()
+        # Splitter sizes are restored on the first show, not here: see
+        # showEvent.
+        self._layout_restored = False
+        self._autosave_timer.start()
+        self.encoder_probe.start()
+
+    def showEvent(self, event) -> None:
+        """Restore the saved layout the first time the window is shown.
+
+        Not in the constructor. A QSplitter given sizes before it has been
+        laid out scales them into whatever width it happens to have, which is
+        a couple of hundred pixels of nothing, and the numbers that come back
+        afterwards are not the numbers that went in. After the first show it
+        has its real width and the sizes mean what they say.
+        """
+        super().showEvent(event)
+        if not self._layout_restored:
+            self._layout_restored = True
+            self._restore_layout()
 
     # -- geometry ---------------------------------------------------------
 
@@ -251,6 +341,7 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.preview)
 
         top = QSplitter(Qt.Orientation.Horizontal, self)
+        self._top_splitter = top
         top.addWidget(bin_panel)
         top.addWidget(preview_panel)
         top.setStretchFactor(0, 0)
@@ -278,6 +369,7 @@ class MainWindow(QMainWindow):
         timeline_frame.setMinimumHeight(180)
 
         split = QSplitter(Qt.Orientation.Vertical, self)
+        self._main_splitter = split
         split.addWidget(top)
         split.addWidget(timeline_frame)
         split.setStretchFactor(0, 1)
@@ -325,6 +417,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         action(file_menu, "&New", self.new_project, QKeySequence.StandardKey.New)
         action(file_menu, "&Open...", self.open_project, QKeySequence.StandardKey.Open)
+        self.recent_menu = file_menu.addMenu("Open &Recent")
         action(file_menu, "&Save", self.save_project, QKeySequence.StandardKey.Save)
         action(
             file_menu,
@@ -371,6 +464,10 @@ class MainWindow(QMainWindow):
         self.mute_action = action(
             edit_menu, "Toggle track &mute", self.toggle_selected_track_mute, "M"
         )
+        edit_menu.addSeparator()
+        self.relink_action = action(
+            edit_menu, "&Relink missing media...", self.relink_missing_media
+        )
 
         play_menu = self.menuBar().addMenu("&Playback")
         action(play_menu, "&Play/Pause", self.preview.toggle_play, "Space")
@@ -378,6 +475,7 @@ class MainWindow(QMainWindow):
         action(play_menu, "Go to &start", self.playhead_to_start, "Home")
         action(play_menu, "Go to &end", self.playhead_to_end, "End")
 
+        self._refresh_recent_menu()
         self._refresh_edit_actions()
 
     # -- the command stack ------------------------------------------------
@@ -435,6 +533,10 @@ class MainWindow(QMainWindow):
         """
         self.mark_dirty()
         self.timeline.set_project(self._project)
+        # A relink resolves clips, an undo of one un-resolves them, and a drop
+        # can add a clip pointing at a file that has since been deleted. All
+        # three arrive here.
+        self._refresh_missing_media()
         # Not set_project: the playhead stays where it is. What has to be
         # re-read is the duration the scrubber spans and the clip under the
         # playhead, which an edit may have moved out from under it.
@@ -458,6 +560,15 @@ class MainWindow(QMainWindow):
             f"&Redo {self.commands.redo_label()}"
             if self.commands.can_redo()
             else "&Redo"
+        )
+        # Enabled only when there is something to relink, so the menu says
+        # whether the project has a problem without opening anything.
+        missing = len(self._missing_sources())
+        self.relink_action.setEnabled(missing > 0)
+        self.relink_action.setText(
+            f"&Relink missing media... ({missing})"
+            if missing
+            else "&Relink missing media..."
         )
         selected = bool(self.timeline.selected_clip_ids())
         self.split_action.setEnabled(selected)
@@ -626,6 +737,235 @@ class MainWindow(QMainWindow):
             )
         )
 
+    # -- what is remembered between runs -----------------------------------
+
+    def _restore_layout(self) -> None:
+        """Put the splitters and the zoom back where they were last time.
+
+        Geometry is restored earlier, in the constructor, because a window has
+        to be placed before it is shown. These do not: they are inside it.
+        """
+        top = self.settings.splitter(Settings.SPLIT_TOP)
+        if top:
+            self._top_splitter.setSizes(top)
+        main = self.settings.splitter(Settings.SPLIT_MAIN)
+        if main:
+            self._main_splitter.setSizes(main)
+
+        zoom = self.settings.zoom()
+        if zoom is not None:
+            self.timeline.set_zoom(zoom)
+
+        if self.settings.maximised():
+            self.showMaximized()
+
+    def _save_layout(self) -> None:
+        """Write the window's shape back. Called on close.
+
+        The geometry saved is normalGeometry(), not geometry(): a maximised
+        window reports the screen it fills, and restoring that as a normal
+        window would open it edge to edge with no way to tell it had ever been
+        anything else. The maximised flag is stored separately.
+        """
+        self.settings.set_geometry(self.normalGeometry())
+        self.settings.set_maximised(self.isMaximized())
+        self.settings.set_splitter(Settings.SPLIT_TOP, self._top_splitter.sizes())
+        self.settings.set_splitter(Settings.SPLIT_MAIN, self._main_splitter.sizes())
+        self.settings.set_zoom(self.timeline.zoom())
+        self.settings.sync()
+
+    def _refresh_recent_menu(self) -> None:
+        """Rebuild File > Open Recent from the settings list."""
+        self.recent_menu.clear()
+        recent = self.settings.recent_files()
+        if not recent:
+            empty = QAction("No recent projects", self)
+            empty.setEnabled(False)
+            self.recent_menu.addAction(empty)
+            return
+
+        for index, path in enumerate(recent, start=1):
+            act = QAction(f"&{index}  {Path(path).name}", self)
+            act.setToolTip(path)
+            act.setData(path)
+            # default=path, or every entry would close over the last one.
+            act.triggered.connect(lambda _checked=False, p=path: self.open_recent(p))
+            self.recent_menu.addAction(act)
+
+        self.recent_menu.addSeparator()
+        clear = QAction("Clear list", self)
+        clear.triggered.connect(self.clear_recent_files)
+        self.recent_menu.addAction(clear)
+
+    def open_recent(self, path: str | Path) -> bool:
+        """Open a project from the recent list.
+
+        A file that has been deleted or moved is dropped from the list rather
+        than left there to fail again: the entry is stale, and the user
+        clicking it is how they found out.
+        """
+        path = Path(path)
+        if not path.is_file():
+            self.settings.forget_recent(path)
+            self._refresh_recent_menu()
+            show_error(
+                self,
+                "Project not found",
+                f"{path.name} is no longer at that location.",
+                str(path),
+            )
+            return False
+        return self.load_project_file(path)
+
+    def clear_recent_files(self) -> None:
+        self.settings.set_recent_files([])
+        self._refresh_recent_menu()
+
+    def _remember_recent(self, path: Path) -> None:
+        self.settings.remember_recent(path)
+        self._refresh_recent_menu()
+
+    # -- autosave ----------------------------------------------------------
+
+    def autosave_path(self) -> Path | None:
+        """Where this project would autosave, or None if it was never saved.
+
+        An unsaved project has nowhere to put a sidecar: the autosave lives
+        beside the project file and there is no project file. This is the one
+        real hole in the recovery story and it is the one Phase 6 specifies.
+        """
+        if self._project_path is None:
+            return None
+        return autosave_path(self._project_path)
+
+    @Slot()
+    def autosave_now(self) -> bool:
+        """Write the autosave sidecar if there is anything to write.
+
+        Returns whether a file was written. Failure is reported in the status
+        bar and nowhere else: an autosave is a safety net, and a modal dialog
+        every two minutes because a folder went read-only would be worse than
+        the thing it is warning about.
+        """
+        path = self.autosave_path()
+        if path is None or self._project is None or not self._dirty:
+            return False
+        try:
+            save(self._project, path)
+        except (ProjectIOError, OSError) as exc:
+            self.statusBar().showMessage(f"Autosave failed: {exc}", 6000)
+            return False
+        self.statusBar().showMessage(f"Autosaved {path.name}", 2000)
+        return True
+
+    def _discard_autosave(self) -> None:
+        """Drop the sidecar. The work it held is now in the project file."""
+        if self._project_path is not None:
+            discard_autosave(self._project_path)
+
+    def pending_recoveries(self) -> list[Path]:
+        """Recently opened projects whose autosave is newer than they are.
+
+        Only the recent list is searched. There is nowhere else to look: an
+        autosave is a sidecar of a project file, and the application does not
+        keep a register of every project that has ever existed.
+        """
+        return [
+            Path(path)
+            for path in self.settings.recent_files()
+            if autosave_is_newer(Path(path))
+        ]
+
+    def offer_autosave_recovery(self) -> bool:
+        """Ask about unsaved work left by a session that did not finish.
+
+        Called after the window is shown, not during construction: it is a
+        modal dialog, and a modal dialog raised by a constructor is a window
+        that appears to hang before it has drawn itself.
+
+        Returns whether a recovery was actually loaded.
+        """
+        for project_path in self.pending_recoveries():
+            sidecar = autosave_path(project_path)
+            if not confirm(
+                self,
+                "Recover unsaved work",
+                f"{project_path.name} has an autosave that is newer than the "
+                f"saved project.\n\nRecover it? Choosing No deletes the "
+                f"autosave and leaves the saved project alone.",
+            ):
+                discard_autosave(project_path)
+                continue
+
+            if not self.load_project_file(sidecar, prompt=True):
+                continue
+            # Opened from the sidecar, but it IS the project: point the window
+            # at the real file so Save overwrites that and not the autosave,
+            # and mark it dirty, because the saved file is still the old one.
+            #
+            # The second and last caller of mark_dirty, and the only one that
+            # is not a trip through the command stack. It has to be: the
+            # unsaved work is the whole loaded model, not an edit that could
+            # be pushed. Everything else in this window still gets its dirty
+            # state by editing something.
+            self._project_path = project_path
+            self.mark_dirty()
+            self._refresh_status()
+            self.statusBar().showMessage(
+                f"Recovered unsaved work in {project_path.name}. Save to keep it.",
+                10000,
+            )
+            return True
+        return False
+
+    # -- missing media -----------------------------------------------------
+
+    def _missing_sources(self) -> list[MissingSource]:
+        return self._missing
+
+    def _refresh_missing_media(self) -> None:
+        """Re-check the project's sources and tell the timeline what it found."""
+        self._missing = missing_sources(self._project)
+        self.timeline.set_missing_clip_ids(missing_clip_ids(self._project))
+
+    def relink_missing_media(self) -> bool:
+        """Offer to point missing sources at files that do exist.
+
+        The dialog answers in files; the command works in clip ids. The
+        conversion is :func:`core.media_check.relink_map`, and it is the only
+        route: a relink addressed by track and clip index would land on the
+        wrong clip whenever model order and lane order disagree, which they do
+        as soon as a video track has been removed and re-added.
+        """
+        if self._project is None:
+            return False
+        if not self._missing:
+            self.statusBar().showMessage("No missing media in this project", 4000)
+            return False
+
+        dialog = RelinkDialog(self._missing, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        replacements = dialog.replacements()
+        if not replacements:
+            return False
+
+        by_clip_id = relink_map(self._project, replacements)
+        if not by_clip_id:
+            return False
+        if not self.run_command(RelinkMedia(by_clip_id)):
+            return False
+
+        # Whatever was relinked now has a file; anything left does not.
+        still_missing = len(self._missing)
+        self.statusBar().showMessage(
+            f"Relinked {len(by_clip_id)} clip(s)"
+            + (f", {still_missing} file(s) still missing" if still_missing else ""),
+            6000,
+        )
+        return True
+
     # -- project ----------------------------------------------------------
 
     def new_project(self) -> None:
@@ -661,6 +1001,11 @@ class MainWindow(QMainWindow):
             return False
         self._set_project(project, path)
         self.statusBar().showMessage(f"Opened {path.name}", 4000)
+        # Checked on load, as Phase 6 asks, and offered straight away: a
+        # project whose media has moved is unusable until it is answered, and
+        # burying that in a menu would leave the user staring at hatched clips.
+        if self._missing:
+            self.relink_missing_media()
         return True
 
     def is_dirty(self) -> bool:
@@ -669,13 +1014,19 @@ class MainWindow(QMainWindow):
     def mark_dirty(self) -> None:
         """The one place unsaved-changes state is turned on.
 
-        Called from exactly one caller, :meth:`_after_stack_change`, which is
-        where every trip through the command stack ends up. Nothing marks the
-        project dirty by choosing to: it is dirty because something undoable
-        happened to it, so a control added later cannot forget.
+        Called from two places and no others. :meth:`_after_stack_change` is
+        where every trip through the command stack ends up, and it is how
+        every edit in the application becomes unsaved work. No control marks
+        the project dirty by choosing to: it is dirty because something
+        undoable happened to it, so a control added later cannot forget.
 
-        tests/test_editing.py checks both halves of that with an AST walk over
-        this file.
+        :meth:`offer_autosave_recovery` is the exception, and is one because
+        the unsaved work it loads is the entire model rather than an edit:
+        there is no command to push, and the project genuinely differs from
+        the file on disk the moment it opens.
+
+        tests/test_editing.py checks all of that with an AST walk over this
+        file.
         """
         self._dirty = True
 
@@ -739,6 +1090,11 @@ class MainWindow(QMainWindow):
             return
         self._project_path = path
         self._dirty = False
+        # The sidecar held work that is now in the project file. Leaving it
+        # would make the next startup offer to recover something older than
+        # what is already on disk.
+        self._discard_autosave()
+        self._remember_recent(path)
         self._refresh_status()
         self.statusBar().showMessage(f"Saved {path.name}", 4000)
 
@@ -746,6 +1102,9 @@ class MainWindow(QMainWindow):
         self._project = project
         self._project_path = path
         self._dirty = False
+        self._refresh_missing_media()
+        if path is not None:
+            self._remember_recent(path)
         # The history belongs to the project that was open. Keeping it would
         # let Ctrl+Z apply the inverse of an edit to a different model.
         self.commands.clear()
@@ -1137,19 +1496,81 @@ class MainWindow(QMainWindow):
         # provoke by editing (no video track, a second video track carrying
         # clips, an empty project) is raised here. Catching it now means a
         # plain dialog instead of a progress bar that flashes up and dies.
+        #
+        # Against the REAL project, before anything is dropped: these are
+        # complaints about how the timeline is arranged, and the user is
+        # looking at the timeline. Validating the trimmed copy first would
+        # answer "there are two video tracks" with "there are no clips".
         try:
             build_full(self._project)
         except RenderError as exc:
             show_error(self, "Cannot export", *split_error(exc))
             return
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export video", f"{self._project.name}.mp4", "MP4 video (*.mp4)"
+        # Clips whose source has gone are dropped next. FFmpeg's answer to a
+        # missing input is an error about a file it could not open, several
+        # hundred lines into a graph the user did not write; saying so first,
+        # and rendering the rest, is the behaviour Phase 6 asks for and the
+        # only one that is any use.
+        exportable, skipped = without_missing_clips(self._project)
+        try:
+            build_full(exportable)
+        except RenderError as exc:
+            # Structurally fine a moment ago, so what is left cannot be
+            # exported because of what was taken out.
+            if skipped:
+                show_error(
+                    self,
+                    "Cannot export",
+                    "Every clip that would be exported has a missing source "
+                    "file. Relink them from the Edit menu.",
+                    "\n".join(sorted(set(skipped))),
+                )
+            else:
+                show_error(self, "Cannot export", *split_error(exc))
+            return
+
+        dialog = ExportDialog(
+            exportable,
+            self,
+            hardware_available=self.encoder_probe.available(),
+            suggested_path=self._suggested_export_path(),
         )
-        if not path:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        request = dialog.request()
+        if request is None:
+            return
+
+        if skipped and not self._confirm_skipping(skipped):
+            return
+
+        self.start_export(exportable, request)
+
+    def _suggested_export_path(self) -> Path:
+        """Beside the project file, named after it. Otherwise just a name."""
+        name = f"{self._project.name}.mp4"
+        if self._project_path is not None:
+            return self._project_path.with_suffix(".mp4")
+        return Path(name)
+
+    def _confirm_skipping(self, skipped: list[str]) -> bool:
+        """Say what will be missing from the file before making it."""
+        names = ", ".join(sorted(set(skipped))[:5])
+        return confirm(
+            self,
+            "Some clips will be skipped",
+            f"{len(skipped)} clip(s) have no source file and will be left out "
+            f"of the export:\n\n{names}\n\nExport anyway?",
+        )
+
+    def start_export(self, project: Project, request: ExportRequest) -> None:
+        """Run one export. Everything chosen is already in ``request``."""
+        if self._render_thread is not None:
             return
 
         self._render_cancel = threading.Event()
+        self._render_clock.restart()
 
         dialog = QProgressDialog("Starting ffmpeg...", "Cancel", 0, 1000, self)
         dialog.setWindowTitle("Exporting")
@@ -1161,7 +1582,14 @@ class MainWindow(QMainWindow):
         dialog.canceled.connect(self._on_export_cancelled)
         self._render_dialog = dialog
 
-        worker = _RenderWorker(self._project, Path(path), self._render_cancel)
+        worker = _RenderWorker(
+            project,
+            request.out_path,
+            self._render_cancel,
+            crf=request.crf,
+            encoder=request.encoder,
+            out_size=request.out_size,
+        )
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -1181,7 +1609,9 @@ class MainWindow(QMainWindow):
         if total_sec > 0:
             self._render_dialog.setValue(round(done_sec / total_sec * 1000))
         self._render_dialog.setLabelText(
-            format_utils.elapsed_of_total(done_sec, total_sec)
+            format_utils.export_progress(
+                done_sec, total_sec, self._render_clock.elapsed() / 1000
+            )
         )
 
     @Slot()
@@ -1232,6 +1662,13 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_changes():
             event.ignore()
             return
+
+        self._autosave_timer.stop()
+        self._save_layout()
+        # A clean exit means the autosave has nothing left to recover: either
+        # the work was saved or the user chose to discard it. Leaving the
+        # sidecar behind would offer it back on the next launch.
+        self._discard_autosave()
 
         if self._render_cancel is not None:
             self._render_cancel.set()

@@ -47,6 +47,7 @@ __all__ = [
     "DeleteClip",
     "DuplicateClip",
     "SetClipGain",
+    "RelinkMedia",
     "SetTrackMuted",
     "AddClipFromMedia",
     "AddTrack",
@@ -91,6 +92,18 @@ def find_clip(track: Track, clip_id: str) -> Clip:
         if clip.id == clip_id:
             return clip
     raise CommandError(f"no such clip on {track.name}: {clip_id}")
+
+
+def _find_clip_anywhere(project: Project, clip_id: str) -> tuple[Track, Clip] | None:
+    """The clip with this id, wherever it is. None when it has gone.
+
+    Used by commands that are handed clip ids without the track they sit on.
+    """
+    for track in project.tracks:
+        for clip in track.clips:
+            if clip.id == clip_id:
+                return track, clip
+    return None
 
 
 def free_span(
@@ -496,6 +509,63 @@ class AddClipFromMedia(Command):
 
     def undo(self, project: Project) -> None:
         _remove(find_track(project, self.track_id), self.new_clip_id)
+
+
+class RelinkMedia(Command):
+    """Point clips at files that have moved.
+
+    Addressed by clip id and nothing else. There is no track index and no clip
+    index here on purpose: model order and lane order can diverge (removing and
+    re-adding the video track leaves ``project.tracks`` as ``['A1', 'V1']``
+    while the timeline still draws video on top), so an index taken from a
+    dialog and applied to the model can land on the wrong clip, and both clips
+    are valid so nothing raises.
+
+    A relink usually covers several clips at once: every clip cut from one
+    source shares its path, and the user chose the replacement once.
+
+    Whether the new file exists is not checked. If it does not, the clips stay
+    unresolved and keep painting as such, which is the same state they were
+    already in and is recoverable by relinking again.
+    """
+
+    label = "Relink media"
+
+    def __init__(self, new_sources: dict[str, Path | str]) -> None:
+        super().__init__()
+        #: clip id -> the path it should point at.
+        self.new_sources = {
+            clip_id: Path(src) for clip_id, src in new_sources.items()
+        }
+        self._old_sources: dict[str, Path] | None = None
+
+    def do(self, project: Project) -> None:
+        if not self.new_sources:
+            raise CommandError("nothing to relink")
+
+        # Resolve every id before touching anything, so a stale id leaves the
+        # project untouched rather than half relinked.
+        targets: list[tuple[Clip, Path]] = []
+        touches_audio = False
+        for clip_id, src in self.new_sources.items():
+            found = _find_clip_anywhere(project, clip_id)
+            if found is None:
+                raise CommandError(f"no such clip: {clip_id}")
+            track, clip = found
+            targets.append((clip, src))
+            touches_audio = touches_audio or track.kind == "audio"
+
+        self._old_sources = {clip.id: clip.src for clip, _src in targets}
+        for clip, src in targets:
+            clip.src = src
+        self.touches_audio = touches_audio
+
+    def undo(self, project: Project) -> None:
+        assert self._old_sources is not None
+        for clip_id, src in self._old_sources.items():
+            found = _find_clip_anywhere(project, clip_id)
+            if found is not None:
+                found[1].src = src
 
 
 # -- track commands ---------------------------------------------------------

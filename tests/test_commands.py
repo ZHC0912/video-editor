@@ -20,6 +20,7 @@ from core.commands import (
     DuplicateClip,
     MacroCommand,
     MoveClip,
+    RelinkMedia,
     RemoveTrack,
     SetClipGain,
     SetTrackMuted,
@@ -722,3 +723,130 @@ class TestCommandContract:
             RemoveTrack,
         ):
             assert cls.label and cls.label != Command.label, cls.__name__
+
+
+class TestRelinkMedia:
+    """Phase 6. Addressed by clip id, and by nothing else."""
+
+    def test_it_repoints_one_clip(self) -> None:
+        project = make_project()
+        clip = place(video(project), 0, T)
+
+        RelinkMedia({clip.id: Path("new.mp4")}).do(project)
+
+        assert clip.src == Path("new.mp4")
+
+    def test_undo_puts_the_old_path_back(self) -> None:
+        project = make_project()
+        clip = place(video(project), 0, T, src=Path("old.mp4"))
+        command = RelinkMedia({clip.id: Path("new.mp4")})
+
+        command.do(project)
+        command.undo(project)
+
+        assert clip.src == Path("old.mp4")
+
+    def test_several_clips_are_repointed_together(self) -> None:
+        project = make_project()
+        first = place(video(project), 0, T)
+        second = place(video(project), 2 * T, T)
+
+        RelinkMedia(
+            {first.id: Path("a.mp4"), second.id: Path("b.mp4")}
+        ).do(project)
+
+        assert (first.src, second.src) == (Path("a.mp4"), Path("b.mp4"))
+
+    def test_a_clip_on_any_track_is_found_by_id_alone(self) -> None:
+        """No track id is given, and none is needed."""
+        project = make_project()
+        audio_clip = place(audio(project), 0, T)
+
+        RelinkMedia({audio_clip.id: Path("new.wav")}).do(project)
+
+        assert audio_clip.src == Path("new.wav")
+
+    def test_track_order_does_not_affect_which_clip_is_repaired(self) -> None:
+        """The Phase 4 finding: model order and lane order can disagree.
+
+        This project's tracks are ['A1', 'V1'], which is what removing and
+        re-adding the video track leaves. Anything counting positions would
+        relink the audio clip with the video file, and both are real clips so
+        nothing would raise.
+        """
+        project = Project(name="inverted", tracks=[])
+        audio_track = Track(name="A1", kind="audio")
+        video_track = Track(name="V1", kind="video")
+        project.tracks = [audio_track, video_track]
+        audio_clip = place(audio_track, 0, T, src=Path("music.wav"))
+        video_clip = place(video_track, 0, T, src=Path("shot.mp4"))
+
+        RelinkMedia({video_clip.id: Path("new_shot.mp4")}).do(project)
+
+        assert video_clip.src == Path("new_shot.mp4")
+        assert audio_clip.src == Path("music.wav")
+
+    def test_an_unknown_id_refuses_and_changes_nothing(self) -> None:
+        project = make_project()
+        clip = place(video(project), 0, T, src=Path("old.mp4"))
+
+        with pytest.raises(CommandError):
+            RelinkMedia({clip.id: Path("new.mp4"), "nope": Path("x.mp4")}).do(project)
+
+        assert clip.src == Path("old.mp4"), "a refused command changed the project"
+
+    def test_relinking_nothing_is_refused(self) -> None:
+        with pytest.raises(CommandError):
+            RelinkMedia({}).do(make_project())
+
+    def test_a_video_relink_does_not_touch_the_audio_bed(self) -> None:
+        project = make_project()
+        clip = place(video(project), 0, T)
+        command = RelinkMedia({clip.id: Path("new.mp4")})
+        command.do(project)
+        assert command.touches_audio is False
+
+    def test_an_audio_relink_does(self) -> None:
+        project = make_project()
+        clip = place(audio(project), 0, T)
+        command = RelinkMedia({clip.id: Path("new.wav")})
+        command.do(project)
+        assert command.touches_audio is True
+
+    def test_a_mixed_relink_touches_audio(self) -> None:
+        project = make_project()
+        video_clip = place(video(project), 0, T)
+        audio_clip = place(audio(project), 0, T)
+        command = RelinkMedia(
+            {video_clip.id: Path("v.mp4"), audio_clip.id: Path("a.wav")}
+        )
+        command.do(project)
+        assert command.touches_audio is True
+
+    def test_redo_reproduces_the_same_result(self) -> None:
+        project = make_project()
+        clip = place(video(project), 0, T, src=Path("old.mp4"))
+        stack = CommandStack()
+
+        stack.push(RelinkMedia({clip.id: Path("new.mp4")}), project)
+        stack.undo(project)
+        stack.redo(project)
+
+        assert clip.src == Path("new.mp4")
+
+    def test_a_string_path_is_accepted_and_stored_as_a_path(self) -> None:
+        project = make_project()
+        clip = place(video(project), 0, T)
+        RelinkMedia({clip.id: "new.mp4"}).do(project)
+        assert clip.src == Path("new.mp4")
+
+    def test_it_does_not_check_whether_the_new_file_exists(self) -> None:
+        """Relinking to something that is also missing is not an error.
+
+        The clips stay unresolved, which is the state they were already in,
+        and the user can relink again.
+        """
+        project = make_project()
+        clip = place(video(project), 0, T)
+        RelinkMedia({clip.id: Path("C:/nowhere/still_gone.mp4")}).do(project)
+        assert clip.src == Path("C:/nowhere/still_gone.mp4")

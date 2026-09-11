@@ -36,6 +36,27 @@ def _run_ffmpeg(args: list[str]) -> None:
         )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _redirect_qsettings(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Keep the test run out of the user's real settings.
+
+    Phase 6 remembers window geometry, splitter sizes, zoom and recent files,
+    and a MainWindow built by a test would otherwise write all of it into the
+    registry of whoever ran pytest. Redirecting the INI format and making it
+    the default sends every QSettings in the process to a temp file instead.
+
+    Autouse and session scoped: it has to be in place before the first window
+    is constructed, and there is no test that wants the real store.
+    """
+    from PySide6.QtCore import QSettings
+
+    settings_dir = tmp_path_factory.mktemp("settings")
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    for scope in (QSettings.Scope.UserScope, QSettings.Scope.SystemScope):
+        QSettings.setPath(QSettings.Format.IniFormat, scope, str(settings_dir))
+    return settings_dir
+
+
 @pytest.fixture(scope="session")
 def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("media")

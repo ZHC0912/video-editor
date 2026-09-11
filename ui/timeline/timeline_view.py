@@ -502,6 +502,10 @@ class TimelinePanel(QWidget):
     def selected_clip_ids(self) -> list[str]:
         return self.scene.selected_clip_ids()
 
+    def set_missing_clip_ids(self, clip_ids) -> None:
+        """Mark clips whose source file has gone. See TimelineScene."""
+        self.scene.set_missing_clip_ids(clip_ids)
+
     def set_media_duration_lookup(self, lookup) -> None:
         """Tell the trim handles how long each source file is.
 
@@ -510,6 +514,19 @@ class TimelinePanel(QWidget):
         :func:`ui.timeline.interaction.clamp_trim_right`.
         """
         self.interaction.media_duration = lookup
+
+    def zoom(self) -> float:
+        """Current zoom, in pixels per second. One of the three floats."""
+        return self.scene.pixels_per_second
+
+    def set_zoom(self, pixels_per_second: float) -> float:
+        """Set the zoom directly, clamped to the range. Returns what was set.
+
+        Used to restore the zoom saved from the last session. Wheel zooming
+        goes through TimelineView.zoom_at instead, which keeps the tick under
+        the pointer under the pointer.
+        """
+        return self.scene.set_pixels_per_second(pixels_per_second)
 
     def zoom_range(self) -> tuple[float, float]:
         return MIN_PIXELS_PER_SECOND, MAX_PIXELS_PER_SECOND

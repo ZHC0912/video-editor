@@ -204,10 +204,19 @@ class TestTheStackIsTheOnlyThingThatMarksDirty:
         assert setters == ["mark_dirty"], f"_dirty set to True in {setters}"
 
     def test_only_the_stack_marks_the_project_dirty(self) -> None:
-        """The companion: mark_dirty has exactly one caller, and it is the
-        place every trip through the command stack ends up."""
+        """The companion: mark_dirty's callers are named here or nowhere.
+
+        _after_stack_change is the place every trip through the command stack
+        ends up, and was the only caller until Phase 6.
+
+        offer_autosave_recovery is the one edit that is not an edit: it loads
+        a whole model that differs from the file on disk, so there is no
+        command to push and nothing else would ever mark it. It is listed
+        rather than allowed for, so a third caller still fails this test.
+        """
         assert self._functions_calling(self._tree(), "mark_dirty") == [
-            "_after_stack_change"
+            "_after_stack_change",
+            "offer_autosave_recovery",
         ]
 
     def test_only_push_undo_and_redo_reach_that_place(self) -> None:

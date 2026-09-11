@@ -330,6 +330,7 @@ class TestMainWindow:
         assert titles == [
             "New",
             "Open...",
+            "Open Recent",
             "Save",
             "Save As...",
             "Import Media...",
@@ -749,7 +750,9 @@ class TestProgressWiring:
         assert window._render_dialog.value() == 0
         window._on_export_progress(15.0, 60.0)
         assert window._render_dialog.value() == 250
-        assert window._render_dialog.labelText() == "15.0s of 1:00"
+        # Media time encoded, then the wall clock and the estimate Phase 6
+        # asks for. The clock has not moved in a test that never started one.
+        assert window._render_dialog.labelText() == "15.0s of 1:00  |  0:00 elapsed"
 
         window._on_export_progress(60.0, 60.0)
         assert window._render_dialog.value() == 1000

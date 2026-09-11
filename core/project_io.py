@@ -19,6 +19,10 @@ __all__ = [
     "SCHEMA_VERSION",
     "PROJECT_EXTENSION",
     "PROJECT_FORMAT_NAME",
+    "AUTOSAVE_SUFFIX",
+    "autosave_path",
+    "autosave_is_newer",
+    "discard_autosave",
     "ProjectIOError",
     "is_project_path",
     "with_project_extension",
@@ -38,6 +42,50 @@ PROJECT_EXTENSION = ".vedit"
 
 #: Human readable name of the format, for file dialog filters.
 PROJECT_FORMAT_NAME = "VidEditor project"
+
+#: Appended to the whole filename, not substituted for the extension, so an
+#: autosave is obviously a sidecar of one particular project file:
+#: ``holiday.vedit`` autosaves to ``holiday.vedit.autosave``. Replacing the
+#: extension would make two projects in one folder, ``a.vedit`` and ``a.bak``,
+#: share an autosave.
+AUTOSAVE_SUFFIX = ".autosave"
+
+
+def autosave_path(project_path: Path) -> Path:
+    """Where the autosave for a saved project lives."""
+    return Path(str(Path(project_path)) + AUTOSAVE_SUFFIX)
+
+
+def autosave_is_newer(project_path: Path) -> bool:
+    """Whether an autosave holds work the project file on disk does not.
+
+    Strictly newer. Saving writes the project and deletes its autosave, so an
+    autosave that still exists and is newer means the application stopped
+    without saving: a crash, a power cut, or Task Manager.
+
+    Any OSError is a no. This runs on the startup path and a permissions
+    problem on a sidecar file must not stop the application opening.
+    """
+    project_path = Path(project_path)
+    sidecar = autosave_path(project_path)
+    try:
+        if not sidecar.is_file():
+            return False
+        if not project_path.is_file():
+            # An autosave whose project has been deleted is not a recovery
+            # candidate: there is nothing to recover it into.
+            return False
+        return sidecar.stat().st_mtime > project_path.stat().st_mtime
+    except OSError:
+        return False
+
+
+def discard_autosave(project_path: Path) -> None:
+    """Delete the autosave sidecar, if there is one. Never raises."""
+    try:
+        autosave_path(project_path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def is_project_path(path: Path) -> bool:

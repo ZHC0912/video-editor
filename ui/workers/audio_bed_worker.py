@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -40,9 +41,66 @@ from core.model import Project
 from core.render import render_audio_bed
 from ui.workers import report_safely
 
-__all__ = ["AudioBedWorker", "DEFAULT_DEBOUNCE_MS"]
+__all__ = [
+    "AudioBedWorker",
+    "DEFAULT_DEBOUNCE_MS",
+    "BED_PREFIX",
+    "BED_SUFFIX",
+    "bed_directory",
+    "purge_stale_beds",
+]
 
 DEFAULT_DEBOUNCE_MS = 500
+
+#: Every bed this application writes is named to this pattern, so a later run
+#: can recognise its own leftovers and nothing else's.
+BED_PREFIX = "videditor_bed_"
+BED_SUFFIX = ".wav"
+
+#: How old a stray bed has to be before a startup sweep deletes it. A day,
+#: which is comfortably longer than any session and comfortably shorter than
+#: leaving gigabytes of WAV in temp forever.
+STALE_BED_AGE_SECONDS = 24 * 3600
+
+
+def bed_directory() -> Path:
+    return Path(tempfile.gettempdir())
+
+
+def purge_stale_beds(
+    older_than_seconds: float = STALE_BED_AGE_SECONDS,
+    directory: Path | None = None,
+    now: float | None = None,
+) -> int:
+    """Delete beds left behind by runs that did not exit cleanly.
+
+    A bed is a decompressed WAV of a whole project's audio, which is tens of
+    megabytes a minute, and a session killed in Task Manager leaves its one
+    behind. Called at startup, where the current session's bed does not exist
+    yet, so the age test is belt and braces rather than the thing keeping it
+    from deleting a bed that is in use.
+
+    Returns how many were removed. Never raises: a temp directory that cannot
+    be read is not a reason to fail to start.
+    """
+    directory = bed_directory() if directory is None else Path(directory)
+    cutoff = (time.time() if now is None else now) - older_than_seconds
+    removed = 0
+    try:
+        candidates = list(directory.glob(f"{BED_PREFIX}*{BED_SUFFIX}"))
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+        except OSError:
+            # Held open by another running copy of the application, or gone
+            # already. Either way, not ours to worry about.
+            continue
+        removed += 1
+    return removed
 
 RenderFn = Callable[[Project, Path, threading.Event], None]
 
@@ -132,11 +190,12 @@ class AudioBedWorker(QObject):
         self._restart_pending = False
         self._cancel: threading.Event | None = None
 
-        # One bed per session. Phase 6 deletes it on clean exit and sweeps any
-        # older strays. The Project model has no id of its own, so the worker
-        # supplies one rather than growing a field on a core model.
+        # One bed per session, deleted on clean exit; strays from runs that
+        # were not clean are swept at startup by purge_stale_beds. The Project
+        # model has no id of its own, so the worker supplies one rather than
+        # growing a field on a core model.
         self._bed_path = (
-            Path(tempfile.gettempdir()) / f"videditor_bed_{uuid.uuid4().hex}.wav"
+            bed_directory() / f"{BED_PREFIX}{uuid.uuid4().hex}{BED_SUFFIX}"
         )
 
         self._job_finished.connect(self._on_job_finished)

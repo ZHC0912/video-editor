@@ -92,6 +92,9 @@ class TimelineScene(QGraphicsScene):
         self._pps = DEFAULT_PIXELS_PER_SECOND
         self._lanes: list[Lane] = []
         self._clip_items: dict[str, ClipItem] = {}
+        # Clips whose source file is not on disk. Told to the scene by the
+        # window; see set_missing_clip_ids.
+        self._missing_clip_ids: frozenset[str] = frozenset()
         self._playhead_ticks = 0
         self._viewport_width = 0.0
 
@@ -272,12 +275,31 @@ class TimelineScene(QGraphicsScene):
                         src_out=clip.src_out,
                     )
                     item.set_muted(track.muted)
+                    item.set_unresolved(clip.id in self._missing_clip_ids)
                     self.addItem(item)
                     self._clip_items[clip.id] = item
 
         self.set_selected_clip_ids(selected)
         self.relayout()
         self.layout_changed.emit()
+
+    def set_missing_clip_ids(self, clip_ids) -> None:
+        """Which clips have no source file on disk any more.
+
+        Pushed in rather than worked out here: the window owns the question of
+        what exists, and the scene is redrawn far too often to be stat'ing
+        files. Applied to the items that exist now, and remembered so the next
+        rebuild applies it too.
+        """
+        missing = frozenset(clip_ids)
+        if missing == self._missing_clip_ids:
+            return
+        self._missing_clip_ids = missing
+        for clip_id, item in self._clip_items.items():
+            item.set_unresolved(clip_id in missing)
+
+    def missing_clip_ids(self) -> frozenset[str]:
+        return self._missing_clip_ids
 
     def _compute_lanes(self, project: Project | None) -> list[Lane]:
         """Video lanes on top, audio beneath, each kind in project order.

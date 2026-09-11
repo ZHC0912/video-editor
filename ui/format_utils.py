@@ -21,6 +21,8 @@ __all__ = [
     "file_size_text",
     "media_summary",
     "elapsed_of_total",
+    "clock_text",
+    "export_progress",
 ]
 
 
@@ -94,3 +96,40 @@ def elapsed_of_total(done_sec: float, total_sec: float) -> str:
     done_ticks = round(done_sec * TICKS_PER_SECOND)
     total_ticks = round(total_sec * TICKS_PER_SECOND)
     return f"{duration_text(done_ticks)} of {duration_text(total_ticks)}"
+
+
+def clock_text(seconds: float) -> str:
+    """A wall-clock span for a progress line: 0:07, 2:31, 1:02:03.
+
+    Not :func:`duration_text`, which is for media lengths and says "7.0s".
+    A stopwatch that counts 7.0s, 8.0s, 9.0s reads as a measurement; a
+    stopwatch that counts 0:07, 0:08, 0:09 reads as time passing.
+    """
+    if seconds < 0 or seconds != seconds:  # NaN compares false with itself
+        return "0:00"
+    whole = int(seconds)
+    hours, whole = divmod(whole, 3600)
+    minutes, secs = divmod(whole, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def export_progress(done_sec: float, total_sec: float, elapsed_sec: float) -> str:
+    """The label under the export progress bar.
+
+    Three facts: how much of the timeline is encoded, how long it has been
+    running, and roughly how much longer it will take. The estimate is a
+    straight extrapolation from the average rate so far, which is honest for
+    a constant-bitrate source and wrong at the start of every export; it is
+    therefore prefixed with "about" and is not shown at all until there is
+    something to extrapolate from.
+    """
+    encoded = elapsed_of_total(done_sec, total_sec)
+    elapsed = f"{clock_text(elapsed_sec)} elapsed"
+    if done_sec <= 0 or total_sec <= 0 or elapsed_sec <= 0:
+        return f"{encoded}  |  {elapsed}"
+    remaining = elapsed_sec * (total_sec - done_sec) / done_sec
+    if remaining <= 0:
+        return f"{encoded}  |  {elapsed}"
+    return f"{encoded}  |  {elapsed}, about {clock_text(remaining)} remaining"
