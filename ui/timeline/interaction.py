@@ -28,7 +28,7 @@ from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPen
 from PySide6.QtWidgets import QGraphicsRectItem
 
-from core.commands import AddClipFromMedia, Command, MoveClip, TrimClip, free_span
+from core.commands import AddClipFromMedia, MoveClip, TrimClip, free_span
 from core.model import Clip, Project, Track
 from core.timebase import frames_to_ticks
 from ui import theme
@@ -207,9 +207,9 @@ def clamp_trim_right(
 
     ``media_duration`` is the length of the source file, when it is known. It
     is not always: a project opened from disk carries clip spans but no probe
-    result, and nothing in this phase goes and fetches one. Where it is unknown
-    the tail is unbounded to the right, which is the same freedom the file
-    format already allows.
+    result, and nothing re-probes every source on load. Where it is unknown the
+    tail is unbounded to the right, which is the same freedom the file format
+    already allows.
     """
     lowest = span.timeline_start + min_duration
     highest = None if media_duration is None else (

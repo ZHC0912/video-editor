@@ -1,9 +1,9 @@
 """Finding missing media, and repairing it without ever counting positions.
 
-The heart of this file is TestNothingIsAddressedByPosition. Phase 4 found that
-model order and lane order can diverge: removing and re-adding the video track
-leaves ``project.tracks`` as ['A1', 'V1'] while the timeline still draws video
-on top. Anything that relinked "the first track's second clip" would then
+The heart of this file is TestNothingIsAddressedByPosition. Model order and
+lane order can diverge: removing and re-adding the video track leaves
+``project.tracks`` as ['A1', 'V1'] while the timeline still draws video on
+top. Anything that relinked "the first track's second clip" would then
 silently repair the wrong clip, and both clips are real so nothing raises.
 """
 
@@ -108,11 +108,11 @@ class TestFindingWhatIsGone:
 
 
 class TestNothingIsAddressedByPosition:
-    """Amendment 4. Ids, never indices."""
+    """Ids, never indices."""
 
     @staticmethod
     def reordered() -> tuple[Project, Clip, Clip]:
-        """The shape Phase 4 found: audio first in the model, video second.
+        """Audio first in the model, video second.
 
         This is what a project looks like after the video track has been
         removed and re-added, and the timeline still draws V1 on top.

@@ -1,9 +1,9 @@
-"""Phase 6 in the window: what is remembered, what is recovered, what is swept.
+"""The project lifecycle: what is remembered, what is recovered, what is swept.
 
-The lifecycle pieces are wired to real files under tmp_path rather than
-mocked. An autosave that is written but never readable, or a settings value
-that survives one process and not the next, is exactly the class of bug this
-phase can introduce, and only a real round trip catches it.
+These are wired to real files under tmp_path rather than mocked. An autosave
+that is written but never readable, or a settings value that survives one
+process and not the next, is the whole class of bug worth catching here, and
+only a real round trip catches it.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def saved_project(tmp_path: Path, src: Path | None = None) -> Path:
 
 
 class TestAutosave:
-    def test_the_interval_is_the_two_minutes_phase_six_asks_for(self) -> None:
+    def test_the_interval_is_two_minutes(self) -> None:
         assert AUTOSAVE_INTERVAL_MS == 120_000
 
     def test_the_timer_runs_from_startup(self, window: MainWindow) -> None:
@@ -147,9 +147,8 @@ class TestAutosave:
     def test_an_unsaved_project_has_nowhere_to_autosave(
         self, window: MainWindow
     ) -> None:
-        # The one real hole in the recovery story, and the one Phase 6
-        # specifies: the sidecar lives beside the project file, and an
-        # Untitled project does not have one.
+        # The one real hole in the recovery story: the sidecar lives beside
+        # the project file, and an Untitled project does not have one.
         window.new_project()
         window.run_command(AddTrack("audio", "A2"))
         assert window.autosave_path() is None
@@ -412,7 +411,8 @@ class TestRememberedLayout:
     def test_an_unreachable_geometry_falls_back_to_the_validator(
         self, qapp: QApplication, tmp_path: Path
     ) -> None:
-        """Amendment 2: the existing is_reachable() decides, not a new check."""
+        """is_reachable() in ui/window_geometry.py decides. There is no
+        second check, and a saved geometry is not trusted over it."""
         from PySide6.QtGui import QGuiApplication
 
         from ui import window_geometry
@@ -786,7 +786,7 @@ class _StubRelink:
 
 
 class TestRelinkCommandIsAddressedById:
-    """Amendment 4, at the window level.
+    """Relink is addressed by id, checked at the window level.
 
     The model order here is ['A1', 'V1'], which is what removing and
     re-adding the video track leaves behind, while the timeline still draws

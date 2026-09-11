@@ -108,7 +108,7 @@ def restored_geometry(
 ) -> QRect:
     """Validate a geometry read back from settings.
 
-    Phase 6 restores window placement from QSettings. A geometry saved on a
+    Window placement is remembered between runs. A geometry saved on a
     monitor that has since been unplugged would put the window somewhere the
     user cannot reach, so it is discarded in favour of the centred default.
     """

@@ -1,0 +1,13 @@
+# Runtime. Pinned to the versions this was built and tested against.
+#
+#     python -m venv .venv
+#     .venv\Scripts\activate
+#     pip install -r requirements.txt
+#
+# FFmpeg is NOT a Python dependency and is not installed by this file. Two
+# binaries have to be placed in bin/ by hand; see the README.
+
+PySide6==6.11.2
+pydantic==2.13.5
+numpy==2.5.2
+Pillow==12.3.0

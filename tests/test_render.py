@@ -495,7 +495,7 @@ class TestExportOptions:
                 if size is not None:
                     assert size[0] % 2 == 0 and size[1] % 2 == 0, (width, height, preset)
 
-    def test_the_quality_presets_are_the_ones_phase_six_names(self) -> None:
+    def test_the_quality_presets_are_the_three_offered(self) -> None:
         assert QUALITY_PRESETS == {"High": 18, "Medium": 20, "Small": 24}
 
     def test_the_software_encoder_uses_crf(self) -> None:

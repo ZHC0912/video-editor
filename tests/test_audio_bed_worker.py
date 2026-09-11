@@ -1,8 +1,8 @@
 """Audio bed worker tests.
 
-This is the worker Phase 5 depends on and the one with the subtlest failure
-mode: a bed that is silently stale, or two ffmpeg processes writing the same
-WAV at once. The render function is injected so the state machine can be driven
+Playback depends on this worker, and it has the subtlest failure mode in
+the application: a bed that is silently stale, or two ffmpeg processes writing
+the same WAV at once. The render function is injected so the state machine can be driven
 deterministically instead of waiting on real encodes.
 """
 
@@ -186,8 +186,8 @@ class TestDebounce:
     def test_invalidate_emits_immediately_even_though_render_waits(
         self, worker_factory
     ) -> None:
-        # Phase 5 has to stop trusting the old file the instant it goes stale,
-        # not 500ms later.
+        # Playback has to stop trusting the old file the instant it goes
+        # stale, not 500ms later when the replacement starts rendering.
         spy = RenderSpy()
         worker = worker_factory(spy, debounce_ms=500)
         seen: list[int] = []
@@ -458,8 +458,9 @@ class TestUsesCoreRender:
     def test_the_default_render_function_is_the_one_from_core(
         self, qapp: QApplication
     ) -> None:
-        # Amendment 3: this worker wraps core.render.render_audio_bed and must
-        # not grow its own subprocess handling.
+        # This worker wraps core.render.render_audio_bed and must not grow
+        # its own subprocess handling: spawning, stderr, cancellation and
+        # partial file cleanup are all solved there, and under test there.
         from core.render import render_audio_bed
 
         worker = AudioBedWorker()

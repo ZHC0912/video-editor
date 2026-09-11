@@ -1,11 +1,11 @@
 """Which encoders are offered, and the difference between the two questions.
 
-Amendment 3 asks for the option to be hidden on a machine that cannot use it,
-and specifies ``ffmpeg -encoders`` as the probe. That listing is a fact about
-the BUILD, and the build ships with the application, so on its own it answers
-the same way on every machine including one with no NVIDIA card in it. The
-trial encode is what actually answers the question that was asked; both are
-tested here, and the difference is the point.
+The hardware option has to be hidden on a machine that cannot use it, and
+``ffmpeg -encoders`` is the obvious probe. That listing is a fact about the
+BUILD, and the build ships with the application, so on its own it answers the
+same way on every machine including one with no NVIDIA card in it. The trial
+encode is what actually answers the question; both are tested here, and the
+difference between them is the point.
 """
 
 from __future__ import annotations

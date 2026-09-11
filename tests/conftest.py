@@ -40,10 +40,11 @@ def _run_ffmpeg(args: list[str]) -> None:
 def _redirect_qsettings(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Keep the test run out of the user's real settings.
 
-    Phase 6 remembers window geometry, splitter sizes, zoom and recent files,
-    and a MainWindow built by a test would otherwise write all of it into the
-    registry of whoever ran pytest. Redirecting the INI format and making it
-    the default sends every QSettings in the process to a temp file instead.
+    The application remembers window geometry, splitter sizes, zoom and
+    recent files, so a MainWindow built by a test would otherwise write all of
+    it into the registry of whoever ran pytest. Redirecting the INI format and
+    making it the default sends every QSettings in the process to a temp file
+    instead.
 
     Autouse and session scoped: it has to be in place before the first window
     is constructed, and there is no test that wants the real store.
@@ -55,6 +56,37 @@ def _redirect_qsettings(tmp_path_factory: pytest.TempPathFactory) -> Path:
     for scope in (QSettings.Scope.UserScope, QSettings.Scope.SystemScope):
         QSettings.setPath(QSettings.Format.IniFormat, scope, str(settings_dir))
     return settings_dir
+
+
+@pytest.fixture(scope="session")
+def _default_store(_redirect_qsettings: Path):
+    """One long-lived handle on the default QSettings.
+
+    Held for the session rather than built per test: destroying a QSettings
+    flushes it to disk, and there is no reason to do that before every test in
+    the suite.
+    """
+    from PySide6.QtCore import QSettings
+
+    return QSettings()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_settings(_default_store) -> None:
+    """Start every test with an empty store.
+
+    A MainWindow built without an explicit Settings uses the default one, and
+    writes its geometry, splitter sizes and zoom back on close. Without this,
+    a window closed by one test restores itself into the next test's window,
+    and a test that expects a freshly placed window fails depending on what
+    ran before it. That is a test isolation problem, not a product one: in the
+    application, restoring the last session is the entire point.
+
+    Cleared only when there is something to clear, since almost no test writes
+    settings at all.
+    """
+    if _default_store.allKeys():
+        _default_store.clear()
 
 
 @pytest.fixture(scope="session")

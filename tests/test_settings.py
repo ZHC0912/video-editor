@@ -68,7 +68,7 @@ class TestPureHelpers:
         existing = [str(n) for n in range(MAX_RECENT_FILES)]
         assert len(recent_with(existing, "new")) == MAX_RECENT_FILES
 
-    def test_the_limit_is_the_eight_phase_six_asks_for(self) -> None:
+    def test_the_limit_is_eight(self) -> None:
         assert MAX_RECENT_FILES == 8
 
 

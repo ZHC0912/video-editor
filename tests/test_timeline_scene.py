@@ -1,6 +1,6 @@
 """Timeline scene tests.
 
-The coordinate mapping is the important part. Every later phase reads mouse
+The coordinate mapping is the important part. Every gesture reads mouse
 positions through ticks_to_x and x_to_ticks; if they disagree under zoom, clips
 will land a frame or two off wherever the user drops them and it will look like
 a drag bug rather than a mapping bug.
@@ -357,7 +357,7 @@ class TestRulerHasNoStaleMarks:
     def test_the_zoom_path_and_the_rebuild_path_agree(
         self, wide: TimelineScene, pps: float
     ) -> None:
-        # Phase 4 rebuilds after every command. If these two produced
+        # The scene is rebuilt after every command. If these two produced
         # different rulers, the display would change under the user for no
         # reason they could see.
         wide.set_pixels_per_second(pps)

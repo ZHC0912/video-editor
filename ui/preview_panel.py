@@ -2,12 +2,12 @@
 
 The panel owns widgets and knows nothing about how playback works. A
 controller supplies that, and the panel talks to it through
-:class:`PreviewController`. That seam held through Phase 5: the whole
-controller was replaced with
-:class:`~ui.playback_controller.PlaybackController` and nothing here had to
-change to accommodate it. It has since been widened once, deliberately, for
-scrubbing: a scrub is a three phase gesture and seek() alone could not say
-where one begins and ends.
+:class:`PreviewController`. The seam has earned itself once already: the
+entire controller was replaced with
+:class:`~ui.playback_controller.PlaybackController` and nothing in this file
+had to change. It has been widened once, deliberately, for scrubbing, because
+a scrub is a three phase gesture and seek() alone could not say where one
+begins and ends.
 
 Direction of traffic:
     user gesture      -> panel calls the controller
@@ -218,7 +218,7 @@ class PreviewPanel(QWidget):
     def controller(self) -> PreviewController | None:
         return self._controller
 
-    # -- public API, driven by Phase 5 ------------------------------------
+    # -- public API -------------------------------------------------------
 
     def set_project(self, project: Project | None) -> None:
         self._project = project

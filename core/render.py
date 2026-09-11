@@ -281,7 +281,7 @@ def render_audio_bed(
 ) -> None:
     """Render the whole audio timeline to one uncompressed WAV.
 
-    Phase 5 plays this file as the master clock, so it spans the entire project
+    Playback plays this file as the master clock, so it spans the entire project
     duration including trailing silence. No video stream is decoded or
     referenced, which is what keeps it fast. Raises :class:`NoAudioError` when
     the project has nothing to mix.

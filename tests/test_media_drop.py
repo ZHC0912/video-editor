@@ -543,8 +543,8 @@ class TestDirtyTracking:
     def test_mark_dirty_is_the_single_entry_point(
         self, window: MainWindow
     ) -> None:
-        # Phase 4 points CommandStack.push at this one method. Nothing else
-        # may turn the flag on, or a new control will forget to.
+        # Everything that changes the project arrives here. Nothing else may
+        # turn the flag on, or a control added later will forget to.
         assert window.is_dirty() is False
         window.mark_dirty()
         assert window.is_dirty() is True

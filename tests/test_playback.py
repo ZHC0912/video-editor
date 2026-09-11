@@ -8,6 +8,7 @@ cut, and that nothing corrects the audio.
 
 from __future__ import annotations
 
+import ast
 import os
 import time
 from pathlib import Path
@@ -143,10 +144,10 @@ def h(qapp: QApplication) -> Harness:
 class TestTheSeamHeld:
     """The Protocol is the contract between the panel and whatever plays.
 
-    Phase 5 replaced the entire controller behind it without touching the
-    panel. It has since been widened once, deliberately, by the three scrub
-    methods: a scrub is a three phase gesture, and seek() alone could not say
-    where one begins or ends.
+    The entire controller behind it was replaced once without touching the
+    panel. It has been widened once, deliberately, by the three scrub methods:
+    a scrub is a three phase gesture, and seek() alone could not say where one
+    begins or ends.
     """
 
     def test_the_controller_satisfies_the_protocol(self, h: Harness) -> None:
@@ -168,11 +169,6 @@ class TestTheSeamHeld:
 
     def test_the_panel_accepts_it_without_special_casing(self, h: Harness) -> None:
         assert h.panel.controller() is h.controller
-
-    def test_the_phase_two_controller_is_gone(self) -> None:
-        assert not Path("ui/single_player_controller.py").exists()
-        with pytest.raises(ModuleNotFoundError):
-            __import__("ui.single_player_controller")
 
 
 class TestClockResolution:
@@ -921,7 +917,11 @@ class TestEnd:
 
 
 class TestVolumeIsMonitoringOnly:
-    """Amendment 3. gain_db is baked into the bed by FFmpeg."""
+    """The slider is a monitoring level and never reaches the model.
+
+    Clip gain and track mutes are baked into the bed by FFmpeg long before a
+    player sees it, so changing the volume must not touch gain_db.
+    """
 
     def test_the_slider_changes_the_output_level(self, h: Harness) -> None:
         h.controller.set_volume(50)
@@ -973,9 +973,97 @@ class TestVolumeIsMonitoringOnly:
 
 
 class TestNoSecondAudioPath:
+    """There is one audio output in this application, and there must be.
+
+    All preview sound comes from a single pre-rendered WAV of the whole audio
+    timeline, and that file's position is the master clock: while it is
+    playing, its position IS the timeline position, and the video is corrected
+    to it. A second thing making sound is a second clock. It would drift
+    against the first, and there would be no way to say which of the two was
+    right, which is the failure the whole design exists to remove.
+
+    The rule is easy to break by accident and silent when broken: the sound
+    would still come out, roughly in time, and only a long take would show the
+    drift.
+    """
+
+    #: The one place a QAudioOutput may be constructed. The window owns it
+    #: because the window owns the bed player it belongs to; the playback
+    #: controller is handed that player and never makes one of its own.
+    BED_OUTPUT_SITE = ("ui/main_window.py", "_bed_output")
+
+    @staticmethod
+    def _constructs_audio_output(node: ast.AST) -> bool:
+        """Whether an expression is a ``QAudioOutput(...)`` call.
+
+        Both spellings, because either would work: the imported name, and the
+        attribute form off the module.
+        """
+        if not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id == "QAudioOutput"
+        return isinstance(func, ast.Attribute) and func.attr == "QAudioOutput"
+
+    @classmethod
+    def _audio_output_sites(cls) -> list[tuple[str, str]]:
+        """Every construction of a QAudioOutput under ui/, with what it is
+        assigned to. ``"<unassigned>"`` for one passed straight to a call."""
+        sites: list[tuple[str, str]] = []
+        for path in sorted(Path("ui").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            assigned: set[int] = set()
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not cls._constructs_audio_output(node.value):
+                    continue
+                assigned.add(id(node.value))
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute):
+                        name = target.attr
+                    elif isinstance(target, ast.Name):
+                        name = target.id
+                    else:
+                        name = "<complex target>"
+                    sites.append((path.as_posix(), name))
+
+            # Anything constructed and handed straight to something else,
+            # which is how this would most plausibly be reintroduced:
+            # player.setAudioOutput(QAudioOutput(self)).
+            for node in ast.walk(tree):
+                if cls._constructs_audio_output(node) and id(node) not in assigned:
+                    sites.append((path.as_posix(), "<unassigned>"))
+
+        return sites
+
+    def test_no_second_audio_player_exists(self) -> None:
+        """Exactly one QAudioOutput is constructed anywhere under ui/.
+
+        An AST walk rather than a check that some particular file is absent:
+        the mistake is building a second audio path, not the name of the
+        module it gets built in, and a filename check passes the moment
+        somebody recreates it somewhere else.
+        """
+        sites = self._audio_output_sites()
+
+        assert sites == [self.BED_OUTPUT_SITE], (
+            f"expected the bed output and nothing else, found {sites}. "
+            f"Preview audio comes from the bed, which is the master clock; a "
+            f"second audio output is a second clock."
+        )
+
     def test_neither_video_player_has_an_audio_output(self, h: Harness) -> None:
         assert h.stage.active_player().audioOutput() is None
         assert h.stage.standby_player().audioOutput() is None
+
+    def test_the_video_stage_never_constructs_one(self) -> None:
+        """The likeliest place to reintroduce it, so it is named explicitly."""
+        assert ("ui/video_stage.py", "<unassigned>") not in self._audio_output_sites()
+        source = Path("ui/video_stage.py").read_text(encoding="utf-8")
+        assert "setAudioOutput" not in source
 
     def test_the_controller_never_creates_a_player(self) -> None:
         source = Path("ui/playback_controller.py").read_text(encoding="utf-8")

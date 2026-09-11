@@ -14,7 +14,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-__all__ = ["BinaryNotFoundError", "resolve_binary", "ffmpeg_path", "ffprobe_path"]
+__all__ = ["BinaryNotFoundError", "resolve_binary"]
 
 
 class BinaryNotFoundError(FileNotFoundError):
@@ -71,11 +71,3 @@ def resolve_binary(name: str) -> Path:
     raise BinaryNotFoundError(
         f"could not find the vendored binary {name!r}. Searched:\n  {searched}"
     )
-
-
-def ffmpeg_path() -> Path:
-    return resolve_binary("ffmpeg")
-
-
-def ffprobe_path() -> Path:
-    return resolve_binary("ffprobe")

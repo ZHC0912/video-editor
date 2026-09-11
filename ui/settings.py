@@ -37,7 +37,8 @@ __all__ = [
 ORGANISATION = "VidEditor"
 APPLICATION = "VidEditor"
 
-#: Phase 6 says the last 8.
+#: Enough to cover the projects in play, few enough to read without a
+#: submenu that scrolls.
 MAX_RECENT_FILES = 8
 
 

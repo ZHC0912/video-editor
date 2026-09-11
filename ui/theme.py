@@ -1,8 +1,9 @@
 """Dark theme.
 
 One stylesheet, applied to the QApplication. Colours live here as constants so
-that painting code (the timeline items in Phase 3) reads the same values the
-stylesheet uses, rather than repeating hex strings.
+that painting code (the timeline items, which draw themselves rather than
+being styled) reads the same values the stylesheet uses, rather than repeating
+hex strings.
 
 The stylesheet is a string.Template, not an f-string: Qt style sheets are full
 of literal braces and doubling every one of them would make this unreadable.
@@ -30,7 +31,7 @@ ACCENT = "#4f8fff"
 WARNING = "#d98c3a"
 ERROR = "#d95a5a"
 
-# Clip fills, used from Phase 3 onward.
+# Clip fills. Painted by the timeline items, not by the stylesheet.
 CLIP_VIDEO = "#2d4a6b"
 CLIP_AUDIO = "#2d5a4a"
 

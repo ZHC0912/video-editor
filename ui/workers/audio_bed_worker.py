@@ -1,6 +1,6 @@
 """The preview audio bed.
 
-Phase 5 plays one pre-rendered WAV of the whole audio timeline and uses its
+Playback plays one pre-rendered WAV of the whole audio timeline and uses its
 position as the master clock. This worker is what keeps that file current: any
 edit touching an audio track invalidates it, and 500ms after the edits stop a
 new one is rendered.
@@ -156,10 +156,10 @@ class AudioBedWorker(QObject):
     #: A bed could not be rendered. Carries a message for the user.
     bed_failed = Signal(str)
     #: The current bed is stale. Emitted immediately on every invalidate, so
-    #: Phase 5 can stop trusting the file it is holding.
+    #: playback can stop trusting the file it is holding.
     bed_invalidated = Signal()
     #: The project has no unmuted audio track with clips, so there is nothing
-    #: to render. Phase 5 falls back to a wall clock.
+    #: to render. Playback falls back to a wall clock.
     bed_unavailable = Signal()
 
     #: Internal, carries a finished job back to the GUI thread.

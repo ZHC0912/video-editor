@@ -99,7 +99,11 @@ def select(window: MainWindow, clip_ids: list[str]) -> None:
 
 
 class TestNothingMutatesTheModelDirectly:
-    """Amendment 2: every mutation routes through core.commands."""
+    """Every mutation routes through core.commands, checked structurally.
+
+    A control that changed a track directly would be invisible to undo and
+    would leave the project modified with nothing having marked it dirty.
+    """
 
     UI_FILES = sorted(Path("ui").rglob("*.py"))
 
@@ -161,7 +165,7 @@ class TestNothingMutatesTheModelDirectly:
 
 
 class TestTheStackIsTheOnlyThingThatMarksDirty:
-    """Amendment 3, and the companion the amendment asked for."""
+    """The dirty flag belongs to the command stack and to nothing else."""
 
     @staticmethod
     def _tree() -> ast.Module:
@@ -185,7 +189,7 @@ class TestTheStackIsTheOnlyThingThatMarksDirty:
         return sorted(set(found))
 
     def test_no_control_sets_the_flag_directly(self) -> None:
-        """The Phase 3 test, still passing."""
+        """No control anywhere turns the flag on by assigning to it."""
         setters: list[str] = []
         for node in ast.walk(self._tree()):
             if not isinstance(node, ast.FunctionDef):
@@ -206,8 +210,9 @@ class TestTheStackIsTheOnlyThingThatMarksDirty:
     def test_only_the_stack_marks_the_project_dirty(self) -> None:
         """The companion: mark_dirty's callers are named here or nowhere.
 
-        _after_stack_change is the place every trip through the command stack
-        ends up, and was the only caller until Phase 6.
+        _after_stack_change is the place every trip through the command
+        stack ends up, and was the only caller for most of this project's
+        life.
 
         offer_autosave_recovery is the one edit that is not an edit: it loads
         a whole model that differs from the file on disk, so there is no
@@ -569,7 +574,11 @@ class TestPlayheadNudges:
 
 
 class TestAudioBedInvalidation:
-    """Amendment 5. Forgetting this line breaks Phase 5 silently."""
+    """Forgetting this one line breaks playback silently.
+
+    The bed would go on playing audio the timeline no longer contains, and
+    nothing would report an error.
+    """
 
     def test_an_audio_edit_invalidates_the_bed(self, window: MainWindow) -> None:
         _, audio = tracks(window)
@@ -659,7 +668,7 @@ class TestAudioBedInvalidation:
 
 
 class TestDragFromTheBin:
-    """Amendment 4, from the window's side."""
+    """Dragging a bin row onto a lane, from the window's side."""
 
     @staticmethod
     def bin_row(window: MainWindow, info: MediaInfo) -> QListWidgetItem:
@@ -1038,13 +1047,13 @@ class TestMovingDoesNotChangeTheTransport:
 
 
 class TestFullSession:
-    """The Phase 4 acceptance run, driven through the window."""
+    """A whole editing session driven through the window, undone to empty."""
 
     def test_import_edit_and_undo_back_to_empty(self, window: MainWindow) -> None:
         video, audio = tracks(window)
 
         first = add_clip(window, video, 0, 4 * T)
-        second = add_clip(window, video, 6 * T, 4 * T)
+        add_clip(window, video, 6 * T, 4 * T)
         add_clip(window, audio, 0, 8 * T)
 
         select(window, [first])

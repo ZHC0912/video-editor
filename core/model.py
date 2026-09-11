@@ -154,7 +154,8 @@ def clip_at(track: Track, t: int) -> Clip | None:
 def next_clip_after(track: Track, t: int) -> Clip | None:
     """The first clip starting strictly after ``t``.
 
-    Phase 5 uses this to preload the following clip into the idle player.
+    Playback uses this to preload the following clip into the idle player,
+    so that a cut is a swap between two loaded players rather than a load.
     """
     for clip in track.clips:
         if clip.timeline_start > t:

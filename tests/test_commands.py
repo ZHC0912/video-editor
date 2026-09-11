@@ -613,7 +613,7 @@ class TestCommandStack:
 
 
 class TestFullSession:
-    """The Phase 4 acceptance scenario, without the mouse."""
+    """A whole editing session against the commands alone, without the mouse."""
 
     def test_a_whole_edit_session_undoes_back_to_empty(self) -> None:
         project = make_project()
@@ -726,7 +726,7 @@ class TestCommandContract:
 
 
 class TestRelinkMedia:
-    """Phase 6. Addressed by clip id, and by nothing else."""
+    """Addressed by clip id, and by nothing else."""
 
     def test_it_repoints_one_clip(self) -> None:
         project = make_project()
@@ -767,7 +767,7 @@ class TestRelinkMedia:
         assert audio_clip.src == Path("new.wav")
 
     def test_track_order_does_not_affect_which_clip_is_repaired(self) -> None:
-        """The Phase 4 finding: model order and lane order can disagree.
+        """Model order and lane order can disagree.
 
         This project's tracks are ['A1', 'V1'], which is what removing and
         re-adding the video track leaves. Anything counting positions would

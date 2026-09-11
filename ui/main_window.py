@@ -102,7 +102,8 @@ from ui.workers.thumbnail_worker import shared_thumbnail_cache
 
 __all__ = ["MainWindow", "AUTOSAVE_INTERVAL_MS"]
 
-#: Phase 6 says every 120 seconds while there are unsaved changes.
+#: Two minutes, while there are unsaved changes. Long enough to be invisible
+#: during an editing session, short enough that a crash costs a few edits.
 AUTOSAVE_INTERVAL_MS = 120_000
 
 MEDIA_FILTER = (
@@ -220,9 +221,8 @@ class MainWindow(QMainWindow):
         # third writer added later cannot slip past by connecting elsewhere.
         self._syncing_playhead = False
 
-        # One bed for the window. Phase 5 consumes it; nothing does yet, so
-        # for now it only reports into the status bar. It is wired up now
-        # because every trigger for it already exists.
+        # One bed for the window. The playback controller consumes it: while
+        # the bed is valid, its position IS the timeline position.
         self.audio_bed = AudioBedWorker(self)
         self.audio_bed.bed_ready.connect(self._on_bed_ready)
         self.audio_bed.bed_failed.connect(self._on_bed_failed)
@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
     def apply_geometry(self, saved: QRect | None = None) -> None:
         """Size and place the window inside the screen that is actually there.
 
-        Phase 6 passes the QRect it read back from QSettings. It is validated
+        ``saved`` is the rectangle read back from settings. It is validated
         rather than trusted: a geometry saved on a monitor that is no longer
         connected would open the window where the mouse cannot reach it.
         """
@@ -544,8 +544,8 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         self._refresh_edit_actions()
         if command.touches_audio:
-            # One line, and Phase 5 breaks silently without it: the bed would
-            # go on playing audio the timeline no longer contains.
+            # One line, and playback breaks silently without it: the bed
+            # would go on playing audio the timeline no longer contains.
             self.audio_bed.invalidate()
 
     def _refresh_edit_actions(self) -> None:
@@ -832,7 +832,7 @@ class MainWindow(QMainWindow):
 
         An unsaved project has nowhere to put a sidecar: the autosave lives
         beside the project file and there is no project file. This is the one
-        real hole in the recovery story and it is the one Phase 6 specifies.
+        real hole in the recovery story.
         """
         if self._project_path is None:
             return None
@@ -1001,9 +1001,9 @@ class MainWindow(QMainWindow):
             return False
         self._set_project(project, path)
         self.statusBar().showMessage(f"Opened {path.name}", 4000)
-        # Checked on load, as Phase 6 asks, and offered straight away: a
-        # project whose media has moved is unusable until it is answered, and
-        # burying that in a menu would leave the user staring at hatched clips.
+        # Checked on load and offered straight away: a project whose media
+        # has moved is unusable until it is answered, and burying that in a
+        # menu would leave the user staring at hatched clips wondering why.
         if self._missing:
             self.relink_missing_media()
         return True
@@ -1033,9 +1033,9 @@ class MainWindow(QMainWindow):
     def _confirm_discard_changes(self) -> bool:
         """Ask before throwing away unsaved edits. True means carry on.
 
-        Phase 6 owns the project lifecycle properly, including prompting on
-        close and autosave recovery. This is the minimum needed so that
-        dropping a project file cannot silently discard work.
+        Every route that replaces or discards the open model comes through
+        here: New, Open, a dropped project file, and closing the window. It is
+        the only thing standing between a careless click and lost work.
         """
         if not self._dirty or self._project is None:
             return True
@@ -1509,9 +1509,9 @@ class MainWindow(QMainWindow):
 
         # Clips whose source has gone are dropped next. FFmpeg's answer to a
         # missing input is an error about a file it could not open, several
-        # hundred lines into a graph the user did not write; saying so first,
-        # and rendering the rest, is the behaviour Phase 6 asks for and the
-        # only one that is any use.
+        # hundred lines into a graph the user did not write. Saying so
+        # first, and rendering the rest, is the only behaviour that is any
+        # use.
         exportable, skipped = without_missing_clips(self._project)
         try:
             build_full(exportable)

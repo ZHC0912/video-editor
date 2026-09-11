@@ -33,7 +33,7 @@ from ui.video_stage import VideoStage  # noqa: E402
 
 
 def timeline_controller(widget: PreviewPanel) -> PlaybackController:
-    """The real Phase 5 controller, with a bed player that never gets a bed.
+    """The real playback controller, with a bed player that never gets a bed.
 
     A stub would let the panel drift away from the PreviewController protocol
     without anything noticing, which is the whole point of the seam.
@@ -76,8 +76,8 @@ class TestTheme:
 
 class TestVideoStageIsSilent:
     def test_neither_player_has_an_audio_output(self, qapp) -> None:
-        # Phase 5's master clock is the audio bed. A QAudioOutput here would
-        # be a second, competing clock.
+        # The master clock is the audio bed. A QAudioOutput here would be a
+        # second, competing clock with no way to say which was right.
         stage = VideoStage()
         assert stage.active_player().audioOutput() is None
         assert stage.standby_player().audioOutput() is None
@@ -270,8 +270,8 @@ class TestPreviewPanel:
         assert panel._play_pause.isEnabled() is True
 
     def test_the_controller_satisfies_the_protocol(self, panel: PreviewPanel) -> None:
-        # Phase 5 swapped this out and the protocol is what made that a
-        # replacement rather than a rewrite. It stays the contract.
+        # The controller behind this was swapped out once, and the protocol
+        # is what made that a replacement rather than a rewrite.
         assert isinstance(panel.controller(), PreviewController)
 
     def test_the_status_line_is_the_controllers_to_write(
@@ -371,7 +371,7 @@ class TestMainWindow:
     def test_one_setsource_per_load(
         self, window: MainWindow, qapp: QApplication, monkeypatch
     ) -> None:
-        # Every extra setSource is another demux of the same file. Phase 5's
+        # Every extra setSource is another demux of the same file, and the
         # preloading assumes exactly one per intended load.
         from pathlib import Path
 
@@ -387,8 +387,8 @@ class TestMainWindow:
         assert len(calls) == 1
 
     def test_the_volume_slider_is_live(self, window: MainWindow) -> None:
-        # Disabled from Phase 2 until Phase 5 gave it a real audio path: the
-        # bed player's QAudioOutput.
+        # It controls the bed player's QAudioOutput, which is the only
+        # audio output in the application.
         assert window.preview._volume.isEnabled() is True
         assert window.preview._volume.toolTip() == "Volume"
 
@@ -737,8 +737,8 @@ class TestProgressWiring:
     def test_the_dialog_is_driven_by_the_callback_alone(
         self, qapp: QApplication
     ) -> None:
-        # Amendment 2: no timer, no interpolation. The dialog only moves when
-        # core.render calls back.
+        # No timer, no interpolation: the dialog only moves when core.render
+        # calls back with a position ffmpeg actually reported.
         from PySide6.QtWidgets import QProgressDialog
 
         window = MainWindow()
@@ -750,8 +750,8 @@ class TestProgressWiring:
         assert window._render_dialog.value() == 0
         window._on_export_progress(15.0, 60.0)
         assert window._render_dialog.value() == 250
-        # Media time encoded, then the wall clock and the estimate Phase 6
-        # asks for. The clock has not moved in a test that never started one.
+        # Media time encoded, then the wall clock and the estimate. The
+        # clock has not moved in a test that never started one.
         assert window._render_dialog.labelText() == "15.0s of 1:00  |  0:00 elapsed"
 
         window._on_export_progress(60.0, 60.0)

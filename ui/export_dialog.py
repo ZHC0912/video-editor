@@ -1,9 +1,8 @@
 """Choosing what to export, before anything starts encoding.
 
-Phase 2 exported straight from a save dialog: one file name and no choices.
-This replaces it. Everything here is a choice that changes the FFmpeg command,
-and the command is assembled in :mod:`core.render`, not here; this dialog
-returns a value object and knows nothing about how it is run.
+Everything here is a choice that changes the FFmpeg command, and the command
+is assembled in :mod:`core.render`, not here: this dialog returns a value
+object and knows nothing about how a render is run.
 
 The hardware encoding option is absent, not disabled, when the machine cannot
 use it. A disabled checkbox invites the user to work out how to enable it, and

@@ -4,8 +4,6 @@ Two players, two video widgets, one stack. While one plays, the other is loaded
 with the next clip and parked, paused, on its in-frame. Swapping at a cut is
 then a stack index change instead of a load, which is what removes the hitch at
 every edit point.
-
-Built now, driven fully in Phase 5. This phase uses one player at a time.
 """
 
 from __future__ import annotations
@@ -61,10 +59,10 @@ class VideoStage(QWidget):
         # Slot A.
         widget_a = QVideoWidget(self)
         player_a = QMediaPlayer(self)
-        # NO QAudioOutput, deliberately. The video players are silent. Phase 5
-        # plays a single pre-rendered WAV of the whole timeline and uses its
-        # position as the master clock; a second audio source here would drift
-        # against it and there would be no way to tell which one was right.
+        # NO QAudioOutput, deliberately. The video players are silent: all
+        # sound comes from a single pre-rendered WAV of the whole timeline,
+        # whose position is the master clock. A second audio source here would
+        # drift against it and there would be no way to tell which was right.
         # If you are here to "fix" missing sound, the bed player is the place.
         player_a.setVideoOutput(widget_a)
         self._widgets.append(widget_a)

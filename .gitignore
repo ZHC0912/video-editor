@@ -1,8 +1,26 @@
+# Environment
 .venv/
+
+# The vendored FFmpeg. Around 200MB for the two binaries, well over GitHub's
+# 100MB per-file limit, and GPL where this source is MIT. Supply your own:
+# see the README.
 bin/
+
+# Build output
+dist/
+build/
+*.spec.bak
+
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
-dist/
-build/
+
+# Projects and their autosaves, which are user data and often carry absolute
+# paths to media on the machine that made them.
+*.vedit
 *.autosave
+
+# Editors
+.vscode/
+.idea/

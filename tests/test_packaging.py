@@ -45,7 +45,7 @@ class TestTheSpec:
         assert "videditor.ico" in spec_source
         assert "icon=" in spec_source
 
-    def test_every_module_phase_six_names_is_excluded(
+    def test_the_heavy_unused_qt_modules_are_excluded(
         self, spec_source: str
     ) -> None:
         for module in (

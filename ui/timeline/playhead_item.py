@@ -1,10 +1,15 @@
-"""The playhead line."""
+"""The playhead: a vertical line down the lanes with a head at the top.
+
+The head is what a user aims at to scrub, and it sits inside the ruler strip,
+which is the band that takes the scrub gesture. The line itself is deliberately
+not grabbable: it crosses every lane, and making it so would swallow rubber
+band selections that start near it.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
-from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsItem
 
 from ui import theme
@@ -50,7 +55,7 @@ class PlayheadItem(QGraphicsItem):
         painter.setPen(QPen(colour, PLAYHEAD_WIDTH))
         painter.drawLine(0, 0, 0, int(self._height))
 
-        # A small grabbable head, which Phase 4 turns into a scrub handle.
+        # The head, which is the part the user aims at to scrub.
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(colour)
         painter.drawPolygon(

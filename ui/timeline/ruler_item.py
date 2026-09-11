@@ -8,8 +8,8 @@ which changes on zoom without the item's bounding rect changing at all, and an
 item whose geometry has not changed is not repainted. The result was a ruler
 carrying marks from two zoom levels at once. Both the zoom path and the rebuild
 path now call :meth:`relayout`, which clears the old marks and asks for a
-repaint every time, so the two cannot drift apart. Phase 4 rebuilds after every
-command, so they must not.
+repaint every time, so the two cannot drift apart. The scene is rebuilt after
+every command, so they must not.
 """
 
 from __future__ import annotations

@@ -5,15 +5,17 @@ failure the user can provoke has a message written for them, and the ffmpeg
 output that explains it goes in the collapsed Details section rather than in
 the sentence they have to read.
 
-Phase 6 extends this with relink and recovery dialogs. The signature here is
-the one Phase 6 specifies, so it does not get rebuilt.
+The signature is the contract: a parent, a title, one sentence the user can
+act on, and an optional block of detail behind a button. Everything that has
+to tell the user something comes through here, so a failure and a question
+look like they came from the same application.
 """
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import QMessageBox, QWidget
 
-__all__ = ["show_error", "show_warning", "split_error", "confirm"]
+__all__ = ["show_error", "split_error", "confirm"]
 
 
 def show_error(
@@ -25,22 +27,6 @@ def show_error(
     """Report a failure. ``detail`` goes behind the Details button."""
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Critical)
-    box.setWindowTitle(title)
-    box.setText(message)
-    if detail:
-        box.setDetailedText(detail)
-    box.setStandardButtons(QMessageBox.StandardButton.Ok)
-    box.exec()
-
-
-def show_warning(
-    parent: QWidget | None,
-    title: str,
-    message: str,
-    detail: str = "",
-) -> None:
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Icon.Warning)
     box.setWindowTitle(title)
     box.setText(message)
     if detail:

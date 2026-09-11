@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 Zhtp0912
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+Third-party components
+---------------------------------------------------------------------------
+
+The MIT licence above covers the source in this repository and nothing else.
+
+FFmpeg. This application runs ffmpeg.exe and ffprobe.exe as external programs
+and expects to find them in bin/. Those binaries are NOT in this repository,
+are not covered by the licence above, and are not distributed with this
+source. The build this was developed against is a GPL build, and anyone
+redistributing a packaged copy of this application with FFmpeg bundled inside
+it takes on the obligations of FFmpeg's own licence (GPL v3 for that build).
+Obtain FFmpeg from https://ffmpeg.org/ and read its licence before
+redistributing anything that contains it.
+
+Qt / PySide6 is used under the LGPL v3. numpy, Pillow and pydantic are used
+under their own permissive licences.

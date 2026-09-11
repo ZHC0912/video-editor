@@ -95,8 +95,9 @@ def _ms_to_ticks(ms: int) -> int:
 class PlaybackController(QObject):
     """Plays the timeline through a PreviewPanel.
 
-    Implements :class:`~ui.preview_panel.PreviewController`, which is the seam
-    Phase 2 left for exactly this.
+    Implements :class:`~ui.preview_panel.PreviewController`, the seam the
+    preview panel talks through. The panel owns widgets and knows nothing about
+    clocks; this owns the clock and knows nothing about widgets.
     """
 
     #: The playhead moved. "qint64", not int: a Qt signal declared with

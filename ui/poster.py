@@ -12,7 +12,7 @@ timeline's filmstrips use.
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 
 from core.model import MediaInfo
 from ui import theme

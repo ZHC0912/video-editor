@@ -142,7 +142,7 @@ class TestVideoBranch:
 
 
 # --------------------------------------------------------------------------
-# Amendment 1: the video branch runs to the project duration
+# The video branch runs to the project duration, not to the last video clip
 # --------------------------------------------------------------------------
 
 class TestTrailingVideoPad:
@@ -311,7 +311,7 @@ class TestMuting:
 
 
 # --------------------------------------------------------------------------
-# Amendment 2: every audio track muted
+# Every audio track muted
 # --------------------------------------------------------------------------
 
 class TestAllAudioMuted:
@@ -340,7 +340,8 @@ class TestAllAudioMuted:
             build_audio_only(silent)
 
     def test_no_audio_error_is_a_render_error(self, silent: Project) -> None:
-        # Phase 5 catches the specific one; a plain export caller can catch the base.
+        # Playback catches the specific one so it can fall back to a wall
+        # clock; a plain export caller can catch the base class.
         with pytest.raises(RenderError):
             build_audio_only(silent)
 

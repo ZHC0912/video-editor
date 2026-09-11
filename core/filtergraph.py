@@ -2,7 +2,7 @@
 
 Two entry points, one builder. :func:`build_full` produces the graph for an
 export; :func:`build_audio_only` produces the graph for the preview audio bed
-that Phase 5 uses as its master clock. They differ in exactly one way: the
+that playback uses as its master clock. They differ in exactly one way: the
 video branch is omitted. The audio branch is identical in both, down to the
 trailing pad, because the bed is meant to be the export's audio.
 
@@ -28,7 +28,7 @@ class NoAudioError(RenderError):
     """No unmuted audio track holds a clip, so there is no bed to render.
 
     A subclass of :class:`RenderError` so a caller that only wants to know
-    whether the render worked can catch the base class. Phase 5 catches this
+    whether the render worked can catch the base class. Playback catches it
     specifically and falls back to a wall clock.
     """
 
@@ -189,8 +189,8 @@ def _audio_chains(tracks: list[Track], project: Project, inputs: _Inputs) -> lis
         track_labels.append(track_label)
 
     # Both builders pad to the full project duration, and they must, because
-    # the bed is meant to be the export's audio. Phase 5 plays the bed as its
-    # master clock so it has to span trailing silence; if the export stopped
+    # the bed is meant to be the export's audio. Playback uses the bed as its
+    # master clock, so it has to span trailing silence; if the export stopped
     # its audio at the last audio clip instead, preview and export would be
     # different lengths and the bed would stop being a preview of anything.
     tail = f",apad=whole_dur={_secs(project.duration, rate)}"
