@@ -31,6 +31,12 @@ pytest                      # all tests
 pytest -m "not slow"        # skip ffmpeg integration tests
 python app.py               # run the app, from Phase 2 onward
 
+## Git
+
+Commits are authored by me alone. Never add a Co-Authored-By trailer, a
+"Generated with" line, or any AI tool attribution to a commit message.
+Commit messages are subject line only.
+
 ## Working agreement
 
 Stop at the end of each phase. Do not start the next one.

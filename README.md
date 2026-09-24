@@ -5,16 +5,57 @@ timeline, play it back with synchronised audio, export an MP4. Python 3.12,
 PySide6, and FFmpeg driven through a filter graph compiler. Offline, with no
 service of any kind behind it.
 
-> **TODO: screenshot / GIF.** A short capture of a clip being trimmed and the
-> timeline playing back belongs here.
+![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![PySide6 6.11](https://img.shields.io/badge/PySide6-6.11-41CD52?logo=qt&logoColor=white)
+![FFmpeg vendored](https://img.shields.io/badge/FFmpeg-vendored-007808?logo=ffmpeg&logoColor=white)
+![MIT](https://img.shields.io/badge/license-MIT-blue)
+![1133 tests](https://img.shields.io/badge/tests-1133%20passing-brightgreen)
+
+<!-- TODO: docs/demo.gif does not exist yet. Record roughly ten seconds: drag a
+     clip from the bin onto the timeline, trim its tail, then play it back.
+     Drop the file in, then delete the two comment markers around the line
+     below and it renders.
+
+![Trimming a clip and playing the timeline back](docs/demo.gif)
+
+-->
+
+## What it does
+
+- Import video and audio by dialog or drag-and-drop, probed in the background
+- Arrange clips on a multi-track timeline with filmstrips and waveforms
+- Trim, split, move, duplicate and delete, snapped to the frame grid
+- Undo and redo every edit, one step per completed gesture
+- Play the timeline back with synchronised audio, scrub it, step it by frame
+- Export to H.264/AAC MP4 with resolution and quality presets
+- Save and reopen projects as JSON, with autosave and crash recovery
+- Runs entirely offline; FFmpeg is a local subprocess, never a service
+
+The parts worth reading the code for are below.
 
 ---
 
 ## How it works
 
-Three things in this project are worth reading the code for.
+<!-- TODO: docs/timeline.png does not exist yet. Capture the timeline panel
+     with two or three clips on the video track showing filmstrip thumbnails,
+     an audio clip below showing its waveform, and the playhead partway
+     across. Drop the file in, then delete the two comment markers around the
+     lines below and it renders.
+
+![The timeline, with filmstrips on the video track and a waveform below](docs/timeline.png)
+
+*Clips carry filmstrips and waveforms, decoded in the background and cached.
+The playhead is the same position the preview is showing.*
+
+-->
+
+Three: the timebase, the filter graph compiler, and the playback clock.
 
 ### 1. Time is an integer number of ticks, and the number is 120000
+
+**One integer tick is 1/120000 of a second, and that number was chosen so
+every broadcast frame rate divides exactly.**
 
 `TICKS_PER_SECOND = 120000`. Every time value in the model, in every command,
 and in every signal is an integer count of these. There are exactly three
@@ -53,6 +94,10 @@ Nothing anywhere may assume it is a whole number.
 
 ### 2. The filter graph compiler: a whole timeline, one FFmpeg invocation
 
+**A multi-track timeline with gaps, trims and per-clip gain becomes one FFmpeg
+command, built as pure string construction and tested without ever running
+it.**
+
 `core/filtergraph.py` turns a `Project` into `(inputs, filter_complex, maps)`.
 No intermediate files, no per-clip render and concat pass: a multi-track edit
 with gaps, trims, per-clip gain and a muted track becomes a single `ffmpeg`
@@ -81,6 +126,9 @@ export disagreed about audio, the preview would stop being a preview.
 → `core/filtergraph.py`, `core/render.py`
 
 ### 3. Playback: the audio is the clock
+
+**The pre-rendered audio bed is the master clock: the video is corrected to
+it, never the other way round.**
 
 The hard problem in an editor's preview is not decoding, it is agreement. Two
 streams playing at once will drift, and something has to be right.
@@ -130,6 +178,39 @@ because every clip of a split is the same file.
 
 ---
 
+## Features
+
+<!-- TODO: docs/export.png does not exist yet. Capture the export dialog with a
+     destination filled in and a resolution preset chosen, or the progress
+     dialog partway through a render showing the elapsed and remaining line.
+     Drop the file in, then delete the two comment markers around the lines
+     below and it renders.
+
+![The export dialog, with resolution and quality presets](docs/export.png)
+
+*Resolution and quality presets, an estimated duration, and progress that
+reports what FFmpeg actually encoded rather than an interpolated guess.*
+
+-->
+
+- Import media by dialog or by dropping files onto the window. Every file is
+  probed on a background thread; the bin fills in as answers arrive.
+- Drag from the bin onto a track to place a full-length clip.
+- Move, trim, split, duplicate, delete and set the gain of clips. Snapping to
+  the frame grid and to clip edges; overlaps are refused, not resolved.
+- Undo and redo everything, one entry per completed gesture.
+- Play the timeline with audio, scrub it, step it a frame at a time.
+- Waveforms and filmstrip thumbnails on the clips, decoded in the background
+  and cached.
+- Save and open projects as JSON, with autosave, recent files, and recovery
+  after a session that did not finish.
+- Relink media that has moved, by file or by searching a folder recursively.
+- Export with a resolution preset, a quality preset, progress with an
+  estimate, a cancel that terminates FFmpeg and deletes the partial file, and
+  optional GPU encoding when the machine can actually do it.
+
+---
+
 ## Architecture
 
 ```
@@ -160,7 +241,7 @@ imports. The point is that the interesting parts of an editor — what an edit
 means, what a project is, how a timeline becomes an FFmpeg command — are
 decidable without a window. They can be tested in milliseconds, in bulk, with
 no event loop, no offscreen platform plugin and no widget lifetimes to manage.
-Around 390 of this project's 1131 tests never construct a QApplication, and
+Around 390 of this project's 1133 tests never construct a QApplication, and
 they are the ones that cover what an edit actually means.
 
 The dependency goes one way only. `ui/` calls into `core/`; `core/` does not
@@ -214,26 +295,6 @@ copy of it to disagree. Tracks are sorted by `timeline_start` and validated
 non-overlapping on load, so a hand-edited file that overlaps two clips is
 rejected rather than half-rendered. `schema_version` is checked exactly: this
 build reads 2 and says so about anything else.
-
----
-
-## Features
-
-- Import media by dialog or by dropping files onto the window. Every file is
-  probed on a background thread; the bin fills in as answers arrive.
-- Drag from the bin onto a track to place a full-length clip.
-- Move, trim, split, duplicate, delete and set the gain of clips. Snapping to
-  the frame grid and to clip edges; overlaps are refused, not resolved.
-- Undo and redo everything, one entry per completed gesture.
-- Play the timeline with audio, scrub it, step it a frame at a time.
-- Waveforms and filmstrip thumbnails on the clips, decoded in the background
-  and cached.
-- Save and open projects as JSON, with autosave, recent files, and recovery
-  after a session that did not finish.
-- Relink media that has moved, by file or by searching a folder recursively.
-- Export with a resolution preset, a quality preset, progress with an
-  estimate, a cancel that terminates FFmpeg and deletes the partial file, and
-  optional GPU encoding when the machine can actually do it.
 
 ---
 
@@ -338,3 +399,16 @@ tracks today.
   that fails at the first export.
 - **Windows only, in practice.** Nothing in `core/` is platform specific, but
   the binary resolution, the packaging spec and the testing are all Windows.
+
+<!-- TODO: docs/relink.png does not exist yet. Open a project whose media has
+     moved, let the relink dialog appear, and capture it with one file located
+     and one still missing. Drop the file in, then delete the two comment
+     markers around the lines below and it renders.
+
+![The relink dialog, listing missing source files](docs/relink.png)
+
+*Media that has moved is found again by file or by searching a folder.
+Unresolved clips stay on the timeline, hatched in red, and are skipped on
+export rather than failing it.*
+
+-->
